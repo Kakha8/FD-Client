@@ -3,12 +3,19 @@ package kakha.kudava.fdclient.controller;
 import javafx.application.Platform;
 import javafx.event.ActionEvent;
 import javafx.fxml.FXML;
+import javafx.fxml.FXMLLoader;
+import javafx.scene.Parent;
+import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.TextField;
+import javafx.stage.Stage;
+import kakha.kudava.fdclient.MainPage;
 import kakha.kudava.fdclient.service.AuthService;
 
+import java.io.IOException;
+import java.util.Objects;
 import java.util.concurrent.CompletionException;
 
 public class LoginPageController {
@@ -52,13 +59,7 @@ public class LoginPageController {
                             }
 
                             System.out.println("Login successful");
-                            System.out.println(
-                                    "Token received: "
-                                            + !accessToken.isBlank()
-                            );
-
-                            // Next step:
-                            // openMainPage();
+                            openMainPage();
                         })
                 );
     }
@@ -78,6 +79,43 @@ public class LoginPageController {
 
     private void showError(String message) {
         errorLabel.setText(message);
+    }
+
+    private void openMainPage() {
+        try {
+            FXMLLoader loader = new FXMLLoader(
+                    Objects.requireNonNull(
+                            getClass().getResource(
+                                    "/kakha/kudava/fdclient/main-page.fxml"
+                            ),
+                            "Could not find main-page.fxml"
+                    )
+            );
+
+            Parent mainPageRoot = loader.load();
+
+            MainPage mainPageController = loader.getController();
+
+            /*
+             * Pass the same AuthService instance that performed login.
+             * It contains the access token and in-memory cookie store.
+             */
+            mainPageController.setAuthService(authService);
+
+            Stage stage = (Stage) loginButton
+                    .getScene()
+                    .getWindow();
+
+            Scene currentScene = stage.getScene();
+            currentScene.setRoot(mainPageRoot);
+
+            stage.setTitle("FD Client");
+            stage.centerOnScreen();
+
+        } catch (IOException exception) {
+            showError("Could not open the main page.");
+            exception.printStackTrace();
+        }
     }
 
 }

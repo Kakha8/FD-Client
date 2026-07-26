@@ -3,43 +3,85 @@ package kakha.kudava.fdclient.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import kakha.kudava.fdclient.security.DpapiRefreshTokenStore;
+import kakha.kudava.fdclient.security.RefreshTokenStore;
 
 import java.net.CookieManager;
 import java.net.CookiePolicy;
+import java.net.HttpCookie;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 public final class AuthService {
 
-    private static final URI LOGIN_URI =
-            URI.create("https://localhost:8443/api/auth/login");
+    private static final URI AUTH_URI =
+            URI.create("https://localhost:8443/api/auth/");
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final URI LOGIN_URI =
+            AUTH_URI.resolve("login");
+
+    private static final URI REFRESH_URI =
+            AUTH_URI.resolve("refresh");
+
+    private static final String REFRESH_COOKIE_NAME =
+            "refresh_token";
+
+    private final ObjectMapper objectMapper =
+            new ObjectMapper();
+
+    private final RefreshTokenStore refreshTokenStore =
+            new DpapiRefreshTokenStore();
 
     /*
-     * The CookieManager captures the refresh_token cookie returned by
-     * the Spring server.
+     * Receives and sends the refresh_token cookie.
+     * The cookie is held in memory while the application runs.
      */
     private final CookieManager cookieManager =
             new CookieManager(null, CookiePolicy.ACCEPT_ALL);
 
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .cookieHandler(cookieManager)
-            .build();
+    private final HttpClient httpClient =
+            HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .cookieHandler(cookieManager)
+                    .build();
 
+    /*
+     * Access tokens are intentionally kept only in memory.
+     */
     private volatile String accessToken;
 
     public CompletableFuture<String> login(
             String username,
             String password
     ) {
-        String requestBody;
+        if (username == null || username.isBlank()) {
+            return CompletableFuture.failedFuture(
+                    new AuthException("Username must not be blank.")
+            );
+        }
+
+        if (password == null || password.isBlank()) {
+            return CompletableFuture.failedFuture(
+                    new AuthException("Password must not be blank.")
+            );
+        }
+
+        /*
+         * Avoid accidentally using an old cookie if the server fails
+         * to return a new refresh token.
+         *
+         * This does not delete the DPAPI file yet.
+         */
+        cookieManager.getCookieStore().removeAll();
+        accessToken = null;
+
+        final String requestBody;
 
         try {
             ObjectNode json = objectMapper.createObjectNode();
@@ -71,23 +113,33 @@ public final class AuthService {
     ) {
         if (response.statusCode() == 200) {
             try {
-                JsonNode json = objectMapper.readTree(response.body());
+                JsonNode json =
+                        objectMapper.readTree(response.body());
 
-                String token = json.path("accessToken").asText();
+                String newAccessToken =
+                        json.path("accessToken").asText();
 
-                if (token.isBlank()) {
+                if (newAccessToken.isBlank()) {
                     throw new AuthException(
                             "The server did not return an access token."
                     );
                 }
 
-                accessToken = token;
-                return token;
+                /*
+                 * Save the refresh token first.
+                 *
+                 * If DPAPI storage fails, login fails cleanly rather
+                 * than leaving a partially initialized local session.
+                 */
+                saveRefreshTokenFromCookieStore();
+
+                accessToken = newAccessToken;
+                return newAccessToken;
             } catch (AuthException exception) {
                 throw exception;
             } catch (Exception exception) {
                 throw new CompletionException(
-                        "Could not parse the login response.",
+                        "Could not process the login response.",
                         exception
                 );
             }
@@ -108,8 +160,192 @@ public final class AuthService {
         );
     }
 
+    /**
+     * Restores the refresh token from the DPAPI-protected file and
+     * exchanges it for a new access token.
+     *
+     * @return true when a session was restored, or false when no
+     * saved refresh token exists
+     */
+    public CompletableFuture<Boolean> restoreSession() {
+        final Optional<String> savedToken;
+
+        try {
+            savedToken = refreshTokenStore.load();
+        } catch (RuntimeException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
+
+        if (savedToken.isEmpty()) {
+            return CompletableFuture.completedFuture(false);
+        }
+
+        restoreRefreshCookie(savedToken.get());
+
+        return refresh()
+                .thenApply(newAccessToken -> true);
+    }
+
+    public CompletableFuture<String> refresh() {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(REFRESH_URI)
+                .timeout(Duration.ofSeconds(20))
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+        return httpClient.sendAsync(
+                        request,
+                        HttpResponse.BodyHandlers.ofString()
+                )
+                .thenApply(this::handleRefreshResponse);
+    }
+
+    private String handleRefreshResponse(
+            HttpResponse<String> response
+    ) {
+        if (response.statusCode() == 200) {
+            try {
+                JsonNode json =
+                        objectMapper.readTree(response.body());
+
+                String newAccessToken =
+                        json.path("accessToken").asText();
+
+                if (newAccessToken.isBlank()) {
+                    throw new AuthException(
+                            "The server returned no access token."
+                    );
+                }
+
+                /*
+                 * The backend rotates refresh tokens.
+                 *
+                 * CookieManager has received the replacement cookie,
+                 * so save the new token before updating session state.
+                 */
+                saveRefreshTokenFromCookieStore();
+
+                accessToken = newAccessToken;
+                return newAccessToken;
+            } catch (AuthException exception) {
+                throw exception;
+            } catch (Exception exception) {
+                throw new CompletionException(
+                        "Could not process the refresh response.",
+                        exception
+                );
+            }
+        }
+
+        if (response.statusCode() == 401
+                || response.statusCode() == 403) {
+            clearLocalSessionAfterAuthFailure();
+
+            throw new AuthException(
+                    "Your saved session has expired. Log in again."
+            );
+        }
+
+        throw new AuthException(
+                "Could not refresh the session. HTTP "
+                        + response.statusCode()
+                        + ". Response: "
+                        + response.body()
+        );
+    }
+
+    /**
+     * Finds the refresh cookie that applies specifically to the
+     * refresh endpoint.
+     */
+    private Optional<HttpCookie> findRefreshCookie() {
+        return cookieManager
+                .getCookieStore()
+                .get(REFRESH_URI)
+                .stream()
+                .filter(cookie ->
+                        REFRESH_COOKIE_NAME.equals(cookie.getName())
+                )
+                .filter(cookie -> !cookie.hasExpired())
+                .filter(cookie ->
+                        cookie.getValue() != null
+                                && !cookie.getValue().isBlank()
+                )
+                .findFirst();
+    }
+
+    private void saveRefreshTokenFromCookieStore() {
+        HttpCookie refreshCookie = findRefreshCookie()
+                .orElseThrow(() -> new AuthException(
+                        "The server did not return a refresh token."
+                ));
+
+        refreshTokenStore.save(refreshCookie.getValue());
+    }
+
+    /**
+     * Reconstructs the refresh cookie in the in-memory CookieManager.
+     *
+     * The token itself was loaded from the DPAPI-protected file.
+     */
+    private void restoreRefreshCookie(String refreshToken) {
+        HttpCookie cookie = new HttpCookie(
+                REFRESH_COOKIE_NAME,
+                refreshToken
+        );
+
+        cookie.setHttpOnly(true);
+        cookie.setSecure(true);
+        cookie.setPath("/api/auth");
+        cookie.setVersion(0);
+
+        cookieManager.getCookieStore().removeAll();
+        cookieManager.getCookieStore().add(AUTH_URI, cookie);
+    }
+
+    /**
+     * Explicit local logout.
+     *
+     * This method reports token-file deletion failures to the caller.
+     */
+    public void clearLocalSession() {
+        accessToken = null;
+        cookieManager.getCookieStore().removeAll();
+        refreshTokenStore.delete();
+    }
+
+    /**
+     * Cleanup used after the server rejects a refresh token.
+     *
+     * Failure to delete the local file must not hide the original
+     * authentication error.
+     */
+    private void clearLocalSessionAfterAuthFailure() {
+        accessToken = null;
+        cookieManager.getCookieStore().removeAll();
+
+        try {
+            refreshTokenStore.delete();
+        } catch (RuntimeException exception) {
+            System.err.println(
+                    "Could not delete the stored refresh token: "
+                            + exception.getMessage()
+            );
+        }
+    }
+
     public String getAccessToken() {
         return accessToken;
+    }
+
+    public Optional<String> accessToken() {
+        return Optional.ofNullable(accessToken);
+    }
+
+    public boolean isAuthenticated() {
+        return accessToken != null
+                && !accessToken.isBlank();
     }
 
     public CookieManager getCookieManager() {

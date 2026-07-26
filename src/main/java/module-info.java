@@ -3,6 +3,7 @@ module kakha.kudava.fdclient {
     requires javafx.fxml;
     requires com.fasterxml.jackson.databind;
     requires java.net.http;
+    requires com.sun.jna.platform;
 
 
     opens kakha.kudava.fdclient to javafx.fxml;
