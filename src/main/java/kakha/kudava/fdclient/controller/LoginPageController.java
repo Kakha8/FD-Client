@@ -11,7 +11,6 @@ import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.TextField;
 import javafx.stage.Stage;
-import kakha.kudava.fdclient.MainPage;
 import kakha.kudava.fdclient.service.AuthService;
 
 import java.io.IOException;
@@ -94,7 +93,7 @@ public class LoginPageController {
 
             Parent mainPageRoot = loader.load();
 
-            MainPage mainPageController = loader.getController();
+            MainPageController mainPageController = loader.getController();
 
             /*
              * Pass the same AuthService instance that performed login.
