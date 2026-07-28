@@ -14,5 +14,28 @@
       <Label layoutX="140.0" layoutY="80.0" prefHeight="17.0" prefWidth="63.0" text="Select file:" />
       <ProgressBar fx:id="cseProgressBar" layoutX="204.0" layoutY="125.0" prefWidth="200.0" progress="0.0" />
       <Button layoutX="204.0" layoutY="165.0" mnemonicParsing="false" onAction="#onEncrypt" prefHeight="36.0" prefWidth="63.0" text="Encrypt" />
+      <Button
+              fx:id="uploadBtn"
+              layoutX="278.0"
+              layoutY="165.0"
+              managed="false"
+              mnemonicParsing="false"
+              onAction="#onUpload"
+              prefHeight="36.0"
+              prefWidth="63.0"
+              text="Upload"
+              visible="false" />
+
+      <Button
+              fx:id="cancelUploadBtn"
+              layoutX="353.0"
+              layoutY="165.0"
+              managed="false"
+              mnemonicParsing="false"
+              onAction="#onCancelUpload"
+              prefHeight="36.0"
+              prefWidth="52.0"
+              text="Cancel"
+              visible="false" />
    </children>
 </AnchorPane>

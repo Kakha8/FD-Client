@@ -26,13 +26,35 @@ public class MainPageController {
     }
 
     public void onCse(ActionEvent event) throws IOException {
+        if (authService == null || !authService.isAuthenticated()) {
+            throw new IllegalStateException(
+                    "No authenticated session is available."
+            );
+        }
+
+        FXMLLoader loader = new FXMLLoader(
+                Objects.requireNonNull(
+                        getClass().getResource(
+                                "/kakha/kudava/fdclient/cse-page.fxml"
+                        ),
+                        "Could not find cse-page.fxml"
+                )
+        );
+
+        Parent root = loader.load();
+
+        CsePageController csePageController =
+                loader.getController();
+
+        /*
+         * Pass the exact same AuthService instance that logged in.
+         * It contains the in-memory access token.
+         */
+        csePageController.setAuthService(authService);
 
         Stage stage = new Stage();
-
-        FXMLLoader fxmlLoader = new FXMLLoader(HelloApplication.class.getResource("cse-page.fxml"));
-        Scene scene = new Scene(fxmlLoader.load(), 320, 240);
-        stage.setTitle("Hello!");
-        stage.setScene(scene);
+        stage.setTitle("Lockbox Encryption");
+        stage.setScene(new Scene(root));
         stage.show();
     }
 }
