@@ -2,6 +2,7 @@ mod dek_envelope;
 mod dpapi;
 mod file_crypto;
 mod keystore;
+mod mldsa;
 mod mlkem_keystore;
 
 use jni::{

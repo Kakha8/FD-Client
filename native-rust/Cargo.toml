@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 jni = "0.22"
 getrandom = "0.4"
 ml-kem = { version = "0.3.2", features = ["getrandom", "zeroize"] }
+ml-dsa = { version = "0.1.1", features = ["getrandom"] }
 
 thiserror = "2"
 zeroize = "1.9"
