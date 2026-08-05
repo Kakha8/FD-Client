@@ -9,14 +9,18 @@ import javafx.fxml.FXML;
 import javafx.scene.Node;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.TextField;
+import javafx.scene.layout.AnchorPane;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
 import javafx.util.Duration;
 import kakha.kudava.fdclient.service.AuthService;
 import kakha.kudava.fdclient.service.CseEncryptionService;
 import kakha.kudava.fdclient.service.LockboxUploadService;
+import kakha.kudava.fdclient.service.LockboxEnrollmentService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -26,6 +30,18 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 public final class CsePageController {
+
+    @FXML
+    private Label lockboxStatusLabel;
+
+    @FXML
+    private Button activateLockboxBtn;
+
+    @FXML
+    private ProgressIndicator activationProgress;
+
+    @FXML
+    private AnchorPane lockboxContentPane;
 
     @FXML
     private TextField fileSelectField;
@@ -45,6 +61,9 @@ public final class CsePageController {
     private final LockboxUploadService uploadService =
             new LockboxUploadService();
 
+    private final LockboxEnrollmentService enrollmentService =
+            new LockboxEnrollmentService();
+
     private AuthService authService;
     private Path selectedFile;
     private Path encryptedFile;
@@ -56,10 +75,22 @@ public final class CsePageController {
 
     private boolean uploadCancelledByUser;
 
+    private CompletableFuture<
+            LockboxEnrollmentService.EnrollmentChallenge
+            > activeEnrollment;
+
+    private LockboxEnrollmentService.EnrollmentChallenge
+            pendingEnrollment;
+
     public void setAuthService(AuthService authService) {
         this.authService = Objects.requireNonNull(
                 authService,
                 "authService"
+        );
+
+        showLockboxState(
+                LockboxUiState.NOT_ENABLED,
+                "Activate Lockbox to register this client."
         );
     }
 
@@ -74,6 +105,123 @@ public final class CsePageController {
 
         hideUploadButton();
         hideCancelButton();
+
+        showLockboxState(
+                LockboxUiState.LOADING,
+                "Checking this device's Lockbox status..."
+        );
+    }
+
+    @FXML
+    private void onActivateLockbox() {
+        if (activeEnrollment != null
+                && !activeEnrollment.isDone()) {
+            return;
+        }
+
+        if (authService == null
+                || !authService.isAuthenticated()) {
+            showLockboxState(
+                    LockboxUiState.ERROR,
+                    "Your session is not authenticated. Log in again."
+            );
+            return;
+        }
+
+        showLockboxState(
+                LockboxUiState.ACTIVATING,
+                "Requesting a secure enrollment challenge..."
+        );
+
+        CompletableFuture<
+                LockboxEnrollmentService.EnrollmentChallenge
+                > enrollment = enrollmentService.beginEnrollment(
+                authService.getAccessToken()
+        );
+
+        activeEnrollment = enrollment;
+
+        enrollment.whenComplete(
+                (challenge, throwable) -> Platform.runLater(
+                        () -> finishEnrollmentStart(
+                                enrollment,
+                                challenge,
+                                throwable
+                        )
+                )
+        );
+    }
+
+    private void finishEnrollmentStart(
+            CompletableFuture<
+                    LockboxEnrollmentService.EnrollmentChallenge
+                    > completed,
+            LockboxEnrollmentService.EnrollmentChallenge challenge,
+            Throwable throwable
+    ) {
+        if (activeEnrollment != completed) {
+            return;
+        }
+
+        activeEnrollment = null;
+
+        if (throwable != null) {
+            showLockboxState(
+                    LockboxUiState.ERROR,
+                    messageOf(
+                            throwable,
+                            "Could not start Lockbox activation."
+                    )
+            );
+            return;
+        }
+
+        pendingEnrollment = challenge;
+
+        showLockboxState(
+                LockboxUiState.ENROLLMENT_PENDING,
+                "Enrollment challenge received. Device-key generation "
+                        + "and signed completion are the next step."
+        );
+    }
+
+    private void showLockboxState(
+            LockboxUiState state,
+            String message
+    ) {
+        boolean busy = state == LockboxUiState.LOADING
+                || state == LockboxUiState.ACTIVATING;
+
+        activationProgress.setVisible(busy);
+        activationProgress.setManaged(busy);
+
+        boolean canActivate =
+                state == LockboxUiState.NOT_ENABLED
+                        || state == LockboxUiState.ERROR;
+
+        activateLockboxBtn.setVisible(canActivate);
+        activateLockboxBtn.setManaged(canActivate);
+        activateLockboxBtn.setDisable(!canActivate);
+        activateLockboxBtn.setText(
+                state == LockboxUiState.ERROR
+                        ? "Try Again"
+                        : "Activate Lockbox"
+        );
+
+        lockboxContentPane.setDisable(
+                state != LockboxUiState.READY
+        );
+
+        lockboxStatusLabel.setText(message);
+    }
+
+    private enum LockboxUiState {
+        LOADING,
+        NOT_ENABLED,
+        ACTIVATING,
+        ENROLLMENT_PENDING,
+        READY,
+        ERROR
     }
 
     @FXML
