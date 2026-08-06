@@ -99,6 +99,20 @@ pub fn ml_kem1024_keypair_exists() -> Result<bool, MlKemKeystoreError> {
     Ok(paths.private_key_path.exists() && paths.public_key_path.exists())
 }
 
+pub fn ensure_ml_kem1024_keypair() -> Result<(), MlKemKeystoreError> {
+    if ml_kem1024_keypair_exists()? {
+        verify_stored_ml_kem1024_keypair()
+    } else {
+        generate_and_store_ml_kem1024_keypair().map(|_| ())
+    }
+}
+
+pub fn stored_ml_kem1024_public_key() -> Result<Vec<u8>, MlKemKeystoreError> {
+    ensure_ml_kem1024_keypair()?;
+    let paths = default_ml_kem_key_paths()?;
+    Ok(fs::read(paths.public_key_path)?)
+}
+
 /// Loads the DPAPI-protected private seed, reconstructs the
 /// ML-KEM decapsulation key, and confirms that its public key
 /// matches the stored public-key file.

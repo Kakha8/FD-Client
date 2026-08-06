@@ -21,11 +21,14 @@ import kakha.kudava.fdclient.service.AuthService;
 import kakha.kudava.fdclient.service.CseEncryptionService;
 import kakha.kudava.fdclient.service.LockboxUploadService;
 import kakha.kudava.fdclient.service.LockboxEnrollmentService;
+import kakha.kudava.fdclient.service.LockboxDeviceIdentity;
 
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.net.InetAddress;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
@@ -75,9 +78,7 @@ public final class CsePageController {
 
     private boolean uploadCancelledByUser;
 
-    private CompletableFuture<
-            LockboxEnrollmentService.EnrollmentChallenge
-            > activeEnrollment;
+    private CompletableFuture<?> activeEnrollment;
 
     private LockboxEnrollmentService.EnrollmentChallenge
             pendingEnrollment;
@@ -177,12 +178,46 @@ public final class CsePageController {
         }
 
         pendingEnrollment = challenge;
+        showLockboxState(LockboxUiState.ACTIVATING,
+                "Generating device keys and signing the enrollment challenge...");
 
-        showLockboxState(
-                LockboxUiState.ENROLLMENT_PENDING,
-                "Enrollment challenge received. Device-key generation "
-                        + "and signed completion are the next step."
-        );
+        UUID deviceId;
+        try {
+            deviceId = LockboxDeviceIdentity.loadOrCreate();
+        } catch (RuntimeException error) {
+            activeEnrollment = null;
+            showLockboxState(LockboxUiState.ERROR,
+                    messageOf(error, "Could not create the Lockbox device identity."));
+            return;
+        }
+        String deviceName = localDeviceName();
+        CompletableFuture<LockboxEnrollmentService.EnrollmentResult> completion =
+                enrollmentService.completeEnrollment(
+                        authService.getAccessToken(), challenge, deviceId, deviceName);
+        activeEnrollment = completion;
+        completion.whenComplete((result, error) -> Platform.runLater(() -> {
+            if (activeEnrollment != completion) {
+                return;
+            }
+            activeEnrollment = null;
+            if (error != null) {
+                showLockboxState(LockboxUiState.ERROR,
+                        messageOf(error, "Could not complete Lockbox activation."));
+                return;
+            }
+            pendingEnrollment = null;
+            showLockboxState(LockboxUiState.READY,
+                    "Lockbox is active on this device.");
+        }));
+    }
+
+    private String localDeviceName() {
+        try {
+            String name = InetAddress.getLocalHost().getHostName();
+            return name == null || name.isBlank() ? "Windows device" : name;
+        } catch (Exception ignored) {
+            return "Windows device";
+        }
     }
 
     private void showLockboxState(

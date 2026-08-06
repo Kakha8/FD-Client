@@ -2,6 +2,7 @@ package kakha.kudava.fdclient.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import kakha.kudava.fdclient.crypto.LockboxEnrollmentCrypto;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -37,6 +38,9 @@ public final class LockboxEnrollmentService {
                     .connectTimeout(CONNECT_TIMEOUT)
                     .build();
 
+    private final LockboxEnrollmentCrypto enrollmentCrypto =
+            new LockboxEnrollmentCrypto();
+
     public CompletableFuture<EnrollmentChallenge> beginEnrollment(
             String accessToken
     ) {
@@ -66,6 +70,92 @@ public final class LockboxEnrollmentService {
                         )
                 )
                 .thenApply(this::readChallenge);
+    }
+
+    public CompletableFuture<EnrollmentResult> completeEnrollment(
+            String accessToken,
+            EnrollmentChallenge challenge,
+            UUID deviceId,
+            String deviceName
+    ) {
+        if (accessToken == null || accessToken.isBlank()) {
+            return CompletableFuture.failedFuture(
+                    new EnrollmentException("No authenticated session is available.")
+            );
+        }
+
+        return CompletableFuture.supplyAsync(() -> enrollmentCrypto.createProof(
+                challenge.enrollmentId(), challenge.challenge(), challenge.expiresAt(),
+                deviceId, deviceName
+        )).thenCompose(proof -> sendCompletion(accessToken, challenge.enrollmentId(), proof));
+    }
+
+    private CompletableFuture<EnrollmentResult> sendCompletion(
+            String accessToken,
+            UUID enrollmentId,
+            LockboxEnrollmentCrypto.EnrollmentProof proof
+    ) {
+        try {
+            JsonNode body = objectMapper.createObjectNode()
+                    .put("challenge", proof.challenge())
+                    .put("deviceId", proof.deviceId().toString())
+                    .put("deviceName", proof.deviceName())
+                    .set("encryptionKey", objectMapper.createObjectNode()
+                            .put("algorithm", "ML_KEM_1024")
+                            .put("keyId", proof.encryptionKeyId())
+                            .put("publicKey", proof.encryptionPublicKey()));
+            ((com.fasterxml.jackson.databind.node.ObjectNode) body)
+                    .set("signingKey", objectMapper.createObjectNode()
+                            .put("algorithm", "ML_DSA_87")
+                            .put("keyId", proof.signingKeyId())
+                            .put("publicKey", proof.signingPublicKey()));
+            ((com.fasterxml.jackson.databind.node.ObjectNode) body)
+                    .put("signature", proof.signature());
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(ENROLLMENT_URI + "/" + enrollmentId + "/complete"))
+                    .timeout(REQUEST_TIMEOUT)
+                    .header("Authorization", "Bearer " + accessToken)
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(
+                            objectMapper.writeValueAsString(body), StandardCharsets.UTF_8))
+                    .build();
+
+            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                    .thenApply(this::readCompletion)
+                    .thenApply(result -> {
+                        if (!proof.deviceId().equals(result.deviceId())) {
+                            throw new EnrollmentException(
+                                    "The server returned a different Lockbox device ID.");
+                        }
+                        return result;
+                    });
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(
+                    new EnrollmentException("Could not create the enrollment completion request.", e));
+        }
+    }
+
+    private EnrollmentResult readCompletion(HttpResponse<String> response) {
+        if (response.statusCode() == 200) {
+            try {
+                JsonNode json = objectMapper.readTree(response.body());
+                return new EnrollmentResult(
+                        requireText(json, "lockboxStatus"),
+                        requireText(json, "deviceStatus"),
+                        UUID.fromString(requireText(json, "deviceId"))
+                );
+            } catch (Exception e) {
+                throw new CompletionException(new EnrollmentException(
+                        "The server returned an invalid enrollment result.", e));
+            }
+        }
+        if (response.statusCode() == 401 || response.statusCode() == 403) {
+            throw new EnrollmentException("Your session is no longer authorized. Log in again.");
+        }
+        throw new EnrollmentException("Could not complete Lockbox enrollment. HTTP "
+                + response.statusCode() + responseDetails(response.body()));
     }
 
     private EnrollmentChallenge readChallenge(
@@ -160,6 +250,12 @@ public final class LockboxEnrollmentService {
             }
         }
     }
+
+    public record EnrollmentResult(
+            String lockboxStatus,
+            String deviceStatus,
+            UUID deviceId
+    ) {}
 
     public static final class EnrollmentException
             extends RuntimeException {

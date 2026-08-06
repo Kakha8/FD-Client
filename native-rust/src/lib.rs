@@ -3,12 +3,13 @@ mod dpapi;
 mod file_crypto;
 mod keystore;
 mod mldsa;
+mod mldsa_keystore;
 mod mlkem_keystore;
 
 use jni::{
     EnvUnowned, jni_mangle,
-    objects::JString,
-    sys::{jboolean, jclass, jint},
+    objects::{JByteArray, JString},
+    sys::{jboolean, jbyteArray, jclass, jint},
 };
 
 use ml_kem::{
@@ -17,6 +18,7 @@ use ml_kem::{
 };
 
 use std::fmt::Write;
+use std::ptr::null_mut;
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -361,4 +363,59 @@ pub fn get_file_crypto_progress<'local>(
     _class: jclass,
 ) -> jint {
     file_crypto::file_operation_progress() as jint
+}
+
+fn native_bytes<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    operation: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> jbyteArray {
+    unowned_env
+        .with_env(|env| -> Result<jbyteArray, jni::errors::Error> {
+            match operation() {
+                Ok(bytes) => Ok(env.byte_array_from_slice(&bytes)?.into_raw()),
+                Err(error) => {
+                    eprintln!("Native Lockbox operation failed: {error}");
+                    Ok(null_mut())
+                }
+            }
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "getStoredMlKem1024PublicKey")]
+pub fn get_stored_ml_kem1024_public_key<'local>(
+    env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jbyteArray {
+    native_bytes(env, || {
+        mlkem_keystore::stored_ml_kem1024_public_key().map_err(|e| e.to_string())
+    })
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "getStoredMlDsa87PublicKey")]
+pub fn get_stored_ml_dsa87_public_key<'local>(
+    env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jbyteArray {
+    native_bytes(env, || mldsa_keystore::public_key().map_err(|e| e.to_string()))
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "signWithStoredMlDsa87")]
+pub fn sign_with_stored_ml_dsa87<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    message: JByteArray<'local>,
+) -> jbyteArray {
+    unowned_env
+        .with_env(|env| -> Result<jbyteArray, jni::errors::Error> {
+            let message = env.convert_byte_array(&message)?;
+            match mldsa_keystore::sign(&message) {
+                Ok(signature) => Ok(env.byte_array_from_slice(&signature)?.into_raw()),
+                Err(error) => {
+                    eprintln!("Native Lockbox signing failed: {error}");
+                    Ok(null_mut())
+                }
+            }
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
 }

@@ -38,6 +38,12 @@ public final class NativeCryptoBridge {
 
     public static native boolean testStoredMlKemDekEnvelope();
 
+    public static native byte[] getStoredMlKem1024PublicKey();
+
+    public static native byte[] getStoredMlDsa87PublicKey();
+
+    public static native byte[] signWithStoredMlDsa87(byte[] message);
+
     public static native boolean encryptSelectedFile(String inputPath);
 
     public static native boolean decryptSelectedFile(String inputPath);
