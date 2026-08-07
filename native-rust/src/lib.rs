@@ -1,10 +1,14 @@
 mod dek_envelope;
+mod csemlk03;
 mod dpapi;
 mod file_crypto;
+mod kdf;
 mod keystore;
+mod key_id;
 mod mldsa;
 mod mldsa_keystore;
 mod mlkem_keystore;
+mod owner_envelope;
 
 use jni::{
     EnvUnowned, jni_mangle,

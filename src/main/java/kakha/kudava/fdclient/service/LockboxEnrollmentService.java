@@ -72,6 +72,65 @@ public final class LockboxEnrollmentService {
                 .thenApply(this::readChallenge);
     }
 
+    public CompletableFuture<LockboxStatus> getStatus(
+            String accessToken,
+            UUID deviceId
+    ) {
+        if (accessToken == null || accessToken.isBlank()) {
+            return CompletableFuture.failedFuture(
+                    new EnrollmentException("No authenticated session is available.")
+            );
+        }
+        Objects.requireNonNull(deviceId, "deviceId");
+
+        URI statusUri = URI.create(
+                ENROLLMENT_URI + "/status?deviceId=" + deviceId
+        );
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(statusUri)
+                .timeout(REQUEST_TIMEOUT)
+                .header("Authorization", "Bearer " + accessToken)
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+
+        return httpClient.sendAsync(
+                        request,
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+                )
+                .thenApply(this::readStatus);
+    }
+
+    private LockboxStatus readStatus(HttpResponse<String> response) {
+        if (response.statusCode() == 200) {
+            try {
+                JsonNode json = objectMapper.readTree(response.body());
+                return new LockboxStatus(
+                        AccountStatus.valueOf(requireText(json, "lockboxStatus")),
+                        DeviceStatus.valueOf(requireText(json, "deviceStatus")),
+                        UUID.fromString(requireText(json, "deviceId"))
+                );
+            } catch (Exception exception) {
+                throw new CompletionException(
+                        new EnrollmentException(
+                                "The server returned an invalid Lockbox status.",
+                                exception
+                        )
+                );
+            }
+        }
+        if (response.statusCode() == 401 || response.statusCode() == 403) {
+            throw new EnrollmentException(
+                    "Your session is no longer authorized. Log in again."
+            );
+        }
+        throw new EnrollmentException(
+                "Could not check Lockbox status. HTTP "
+                        + response.statusCode()
+                        + responseDetails(response.body())
+        );
+    }
+
     public CompletableFuture<EnrollmentResult> completeEnrollment(
             String accessToken,
             EnrollmentChallenge challenge,
@@ -256,6 +315,31 @@ public final class LockboxEnrollmentService {
             String deviceStatus,
             UUID deviceId
     ) {}
+
+    public record LockboxStatus(
+            AccountStatus lockboxStatus,
+            DeviceStatus deviceStatus,
+            UUID deviceId
+    ) {
+        public LockboxStatus {
+            Objects.requireNonNull(lockboxStatus, "lockboxStatus");
+            Objects.requireNonNull(deviceStatus, "deviceStatus");
+            Objects.requireNonNull(deviceId, "deviceId");
+        }
+    }
+
+    public enum AccountStatus {
+        NOT_ENABLED,
+        ENABLED,
+        SUSPENDED
+    }
+
+    public enum DeviceStatus {
+        NOT_REGISTERED,
+        PENDING,
+        ACTIVE,
+        REVOKED
+    }
 
     public static final class EnrollmentException
             extends RuntimeException {

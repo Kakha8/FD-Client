@@ -83,16 +83,15 @@ public final class CsePageController {
     private LockboxEnrollmentService.EnrollmentChallenge
             pendingEnrollment;
 
+    private boolean retryStatusCheck;
+
     public void setAuthService(AuthService authService) {
         this.authService = Objects.requireNonNull(
                 authService,
                 "authService"
         );
 
-        showLockboxState(
-                LockboxUiState.NOT_ENABLED,
-                "Activate Lockbox to register this client."
-        );
+        checkLockboxStatus();
     }
 
     public AuthService getAuthService() {
@@ -120,6 +119,11 @@ public final class CsePageController {
             return;
         }
 
+        if (retryStatusCheck) {
+            checkLockboxStatus();
+            return;
+        }
+
         if (authService == null
                 || !authService.isAuthenticated()) {
             showLockboxState(
@@ -133,6 +137,7 @@ public final class CsePageController {
                 LockboxUiState.ACTIVATING,
                 "Requesting a secure enrollment challenge..."
         );
+        retryStatusCheck = false;
 
         CompletableFuture<
                 LockboxEnrollmentService.EnrollmentChallenge
@@ -151,6 +156,102 @@ public final class CsePageController {
                         )
                 )
         );
+    }
+
+    private void checkLockboxStatus() {
+        if (authService == null || !authService.isAuthenticated()) {
+            retryStatusCheck = true;
+            showLockboxState(
+                    LockboxUiState.ERROR,
+                    "Your session is not authenticated. Log in again."
+            );
+            return;
+        }
+
+        final UUID deviceId;
+        try {
+            deviceId = LockboxDeviceIdentity.loadOrCreate();
+        } catch (RuntimeException error) {
+            retryStatusCheck = true;
+            showLockboxState(
+                    LockboxUiState.ERROR,
+                    messageOf(error, "Could not load the Lockbox device identity.")
+            );
+            return;
+        }
+
+        retryStatusCheck = false;
+        showLockboxState(
+                LockboxUiState.LOADING,
+                "Checking this device's Lockbox status..."
+        );
+
+        CompletableFuture<LockboxEnrollmentService.LockboxStatus> request =
+                enrollmentService.getStatus(authService.getAccessToken(), deviceId);
+        activeEnrollment = request;
+        request.whenComplete((status, error) -> Platform.runLater(() -> {
+            if (activeEnrollment != request) {
+                return;
+            }
+            activeEnrollment = null;
+            if (error != null) {
+                retryStatusCheck = true;
+                showLockboxState(
+                        LockboxUiState.ERROR,
+                        messageOf(error, "Could not check Lockbox status.")
+                );
+                return;
+            }
+            if (!deviceId.equals(status.deviceId())) {
+                retryStatusCheck = true;
+                showLockboxState(
+                        LockboxUiState.ERROR,
+                        "The server returned a different Lockbox device ID."
+                );
+                return;
+            }
+            applyLockboxStatus(status);
+        }));
+    }
+
+    private void applyLockboxStatus(
+            LockboxEnrollmentService.LockboxStatus status
+    ) {
+        if (status.lockboxStatus()
+                == LockboxEnrollmentService.AccountStatus.NOT_ENABLED) {
+            showLockboxState(
+                    LockboxUiState.NOT_ENABLED,
+                    "Activate Lockbox to register this client."
+            );
+            return;
+        }
+        if (status.lockboxStatus()
+                == LockboxEnrollmentService.AccountStatus.SUSPENDED) {
+            showLockboxState(
+                    LockboxUiState.BLOCKED,
+                    "Lockbox is suspended for this account."
+            );
+            return;
+        }
+
+        switch (status.deviceStatus()) {
+            case ACTIVE -> showLockboxState(
+                    LockboxUiState.READY,
+                    "Lockbox is active on this device."
+            );
+            case NOT_REGISTERED -> showLockboxState(
+                    LockboxUiState.BLOCKED,
+                    "Lockbox is enabled, but this device is not registered."
+            );
+            case PENDING -> showLockboxState(
+                    LockboxUiState.BLOCKED,
+                    "Registration for this Lockbox device is pending."
+            );
+            case REVOKED -> showLockboxState(
+                    LockboxUiState.BLOCKED,
+                    "This Lockbox device has been revoked."
+            );
+        }
     }
 
     private void finishEnrollmentStart(
@@ -256,6 +357,7 @@ public final class CsePageController {
         ACTIVATING,
         ENROLLMENT_PENDING,
         READY,
+        BLOCKED,
         ERROR
     }
 
