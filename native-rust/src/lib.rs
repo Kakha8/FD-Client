@@ -1,5 +1,6 @@
 mod dek_envelope;
 mod csemlk03;
+mod content_crypto;
 mod dpapi;
 mod file_crypto;
 mod kdf;
@@ -7,14 +8,18 @@ mod keystore;
 mod key_id;
 mod mldsa;
 mod mldsa_keystore;
+mod metadata_crypto;
 mod mlkem_keystore;
 mod owner_envelope;
+mod v3_artifacts;
 
 use jni::{
     EnvUnowned, jni_mangle,
     objects::{JByteArray, JString},
-    sys::{jboolean, jbyteArray, jclass, jint},
+    strings::JNIString,
+    sys::{jboolean, jbyteArray, jclass, jint, jlong, jstring},
 };
+use serde::Serialize;
 
 use ml_kem::{
     MlKem1024,
@@ -23,6 +28,20 @@ use ml_kem::{
 
 use std::fmt::Write;
 use std::ptr::null_mut;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct V3ArtifactsJson {
+    client_file_id: String,
+    container_path: String,
+    manifest_path: String,
+    signature_path: String,
+    container_hash: String,
+    container_size: u64,
+    encryption_key_id: String,
+    signing_key_id: String,
+    revision: u64,
+}
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -367,6 +386,63 @@ pub fn get_file_crypto_progress<'local>(
     _class: jclass,
 ) -> jint {
     file_crypto::file_operation_progress() as jint
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "encryptFileV3")]
+pub fn encrypt_file_v3_jni<'local>(
+    mut unowned_env: EnvUnowned<'local>, _class: jclass,
+    input_path: JString<'local>, output_directory: JString<'local>,
+    original_file_name: JString<'local>, mime_type: JString<'local>,
+    device_id: JByteArray<'local>, created_at: jlong, modified_at: jlong,
+) -> jstring {
+    unowned_env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let result = (|| -> Result<String, String> {
+            let input_path = input_path.try_to_string(env).map_err(|e| e.to_string())?;
+            let output_directory = output_directory.try_to_string(env).map_err(|e| e.to_string())?;
+            let original_file_name = original_file_name.try_to_string(env).map_err(|e| e.to_string())?;
+            let mime_type = mime_type.try_to_string(env).map_err(|e| e.to_string())?;
+            let device_bytes = env.convert_byte_array(&device_id).map_err(|e| e.to_string())?;
+            let device_id: [u8; 16] = device_bytes.try_into()
+                .map_err(|_| "device ID must contain exactly 16 bytes".to_string())?;
+            let encryption_key = mlkem_keystore::load_stored_ml_kem1024_encapsulation_key()
+                .map_err(|e| e.to_string())?;
+            let signing_key = mldsa_keystore::load_stored_signing_key()
+                .map_err(|e| e.to_string())?;
+            let artifacts = v3_artifacts::encrypt_file_v3(
+                &v3_artifacts::EncryptV3Request {
+                    input_path: input_path.into(), output_directory: output_directory.into(),
+                    original_file_name, mime_type, device_id, revision: 1,
+                    previous_manifest_hash: [0; 64], created_at_unix_millis: created_at,
+                    modified_at_unix_millis: modified_at,
+                },
+                &v3_artifacts::V3EncryptionKeys {
+                    encryption_public_key: &encryption_key,
+                    signing_private_seed: signing_key.private_seed(),
+                    signing_public_key: signing_key.public_key(),
+                },
+            ).map_err(|e| e.to_string())?;
+            serde_json::to_string(&V3ArtifactsJson {
+                client_file_id: v3_artifacts::format_uuid_public(&artifacts.client_file_id),
+                container_path: artifacts.container_path.to_string_lossy().into_owned(),
+                manifest_path: artifacts.manifest_path.to_string_lossy().into_owned(),
+                signature_path: artifacts.signature_path.to_string_lossy().into_owned(),
+                container_hash: bytes_to_hex(&artifacts.container_hash).to_lowercase(),
+                container_size: artifacts.container_size,
+                encryption_key_id: bytes_to_hex(&artifacts.encryption_key_id).to_lowercase(),
+                signing_key_id: bytes_to_hex(&artifacts.signing_key_id).to_lowercase(),
+                revision: artifacts.revision,
+            }).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(json) => Ok(env.new_string(json)?.into_raw()),
+            Err(error) => {
+                eprintln!("CSEMLK03 encryption failed: {error}");
+                env.throw_new(JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("CSEMLK03 encryption failed: {error}")))?;
+                Ok(null_mut())
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
 }
 
 fn native_bytes<'local>(

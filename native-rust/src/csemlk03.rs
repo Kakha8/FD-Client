@@ -124,8 +124,8 @@ impl Header {
         if self.chunk_count == 0 {
             return Err(FormatError::InvalidChunkCount);
         }
-        let content = encode_content_parameters(&self.content_parameters);
-        let envelope = encode_owner_envelope(&self.owner_envelope)?;
+        let content = encode_content_parameters_section(&self.content_parameters);
+        let envelope = encode_owner_key_envelope_section(&self.owner_envelope)?;
         let metadata = encode_encrypted_metadata(&self.encrypted_metadata)?;
         let total = FIXED_HEADER_LENGTH
             .checked_add(content.len())
@@ -137,16 +137,7 @@ impl Header {
         }
 
         let mut out = Vec::with_capacity(total);
-        out.extend_from_slice(MAGIC);
-        put_u16(&mut out, FORMAT_VERSION);
-        put_u16(&mut out, FIXED_HEADER_LENGTH as u16);
-        put_u32(&mut out, u32::try_from(total).map_err(|_| FormatError::SizeOverflow)?);
-        put_u16(&mut out, SUITE_ID);
-        put_u16(&mut out, REQUIRED_FLAGS);
-        put_u32(&mut out, CHUNK_SIZE);
-        put_u32(&mut out, self.chunk_count);
-        put_u16(&mut out, 3);
-        put_u16(&mut out, 0);
+        out.extend_from_slice(&encode_fixed_preamble(total, self.chunk_count)?);
         out.extend_from_slice(&content);
         out.extend_from_slice(&envelope);
         out.extend_from_slice(&metadata);
@@ -212,7 +203,29 @@ impl Header {
     }
 }
 
-fn encode_content_parameters(value: &ContentParametersData) -> Vec<u8> {
+pub fn encode_fixed_preamble(
+    total_header_length: usize,
+    chunk_count: u32,
+) -> Result<[u8; FIXED_HEADER_LENGTH], FormatError> {
+    if !(FIXED_HEADER_LENGTH..=MAX_HEADER_LENGTH).contains(&total_header_length) {
+        return Err(FormatError::InvalidTotalHeaderLength);
+    }
+    if chunk_count == 0 { return Err(FormatError::InvalidChunkCount); }
+    let mut out = Vec::with_capacity(FIXED_HEADER_LENGTH);
+    out.extend_from_slice(MAGIC);
+    put_u16(&mut out, FORMAT_VERSION);
+    put_u16(&mut out, FIXED_HEADER_LENGTH as u16);
+    put_u32(&mut out, u32::try_from(total_header_length).map_err(|_| FormatError::SizeOverflow)?);
+    put_u16(&mut out, SUITE_ID);
+    put_u16(&mut out, REQUIRED_FLAGS);
+    put_u32(&mut out, CHUNK_SIZE);
+    put_u32(&mut out, chunk_count);
+    put_u16(&mut out, 3);
+    put_u16(&mut out, 0);
+    out.try_into().map_err(|_| FormatError::InvalidFixedHeaderLength)
+}
+
+pub fn encode_content_parameters_section(value: &ContentParametersData) -> Vec<u8> {
     let mut payload = Vec::with_capacity(64);
     payload.extend_from_slice(&value.client_file_id);
     payload.extend_from_slice(&value.file_kdf_salt);
@@ -240,7 +253,7 @@ fn parse_content_parameters(input: &[u8]) -> Result<ContentParametersData, Forma
     })
 }
 
-fn encode_owner_envelope(value: &OwnerKeyEnvelopeData) -> Result<Vec<u8>, FormatError> {
+pub fn encode_owner_key_envelope_section(value: &OwnerKeyEnvelopeData) -> Result<Vec<u8>, FormatError> {
     if value.kem_ciphertext.len() != ML_KEM_1024_CIPHERTEXT_LENGTH
         || value.wrapped_file_master_key.len() != WRAPPED_FILE_MASTER_KEY_LENGTH
     {

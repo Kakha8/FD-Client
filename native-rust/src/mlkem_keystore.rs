@@ -6,7 +6,7 @@ use std::{
 };
 
 use ml_kem::{
-    DecapsulationKey1024,
+    DecapsulationKey1024, EncapsulationKey1024, TryKeyInit,
     kem::{Decapsulate, Encapsulate, KeyExport, KeyInit},
 };
 use thiserror::Error;
@@ -51,6 +51,9 @@ pub enum MlKemKeystoreError {
          the stored private key"
     )]
     PublicKeyMismatch,
+
+    #[error("stored ML-KEM-1024 public key is invalid")]
+    InvalidPublicKey,
 
     #[error("ML-KEM-1024 encapsulation self-test failed")]
     SelfTestFailed,
@@ -111,6 +114,19 @@ pub fn stored_ml_kem1024_public_key() -> Result<Vec<u8>, MlKemKeystoreError> {
     ensure_ml_kem1024_keypair()?;
     let paths = default_ml_kem_key_paths()?;
     Ok(fs::read(paths.public_key_path)?)
+}
+
+/// Loads only the public encryption key. Encryption must never unprotect the
+/// owner's ML-KEM private key.
+pub fn load_stored_ml_kem1024_encapsulation_key(
+) -> Result<EncapsulationKey1024, MlKemKeystoreError> {
+    let paths = default_ml_kem_key_paths()?;
+    if !paths.private_key_path.is_file() || !paths.public_key_path.is_file() {
+        return Err(MlKemKeystoreError::PublicKeyMismatch);
+    }
+    let bytes = fs::read(paths.public_key_path)?;
+    EncapsulationKey1024::new_from_slice(&bytes)
+        .map_err(|_| MlKemKeystoreError::InvalidPublicKey)
 }
 
 /// Loads the DPAPI-protected private seed, reconstructs the

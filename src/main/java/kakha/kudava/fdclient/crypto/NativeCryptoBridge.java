@@ -46,6 +46,16 @@ public final class NativeCryptoBridge {
 
     public static native boolean encryptSelectedFile(String inputPath);
 
+    public static native String encryptFileV3(
+            String inputPath,
+            String outputDirectory,
+            String originalFileName,
+            String mimeType,
+            byte[] deviceId,
+            long createdAtUnixMillis,
+            long modifiedAtUnixMillis
+    );
+
     public static native boolean decryptSelectedFile(String inputPath);
 
     public static native boolean decryptSelectedFileTo(

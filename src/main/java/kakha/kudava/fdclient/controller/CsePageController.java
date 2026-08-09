@@ -69,7 +69,7 @@ public final class CsePageController {
 
     private AuthService authService;
     private Path selectedFile;
-    private Path encryptedFile;
+    private CseEncryptionService.V3Artifacts encryptedArtifacts;
     private Timeline progressPoller;
 
     private CompletableFuture<
@@ -385,7 +385,7 @@ public final class CsePageController {
         }
 
         selectedFile = selected.toPath();
-        encryptedFile = null;
+        encryptedArtifacts = null;
 
         fileSelectField.setText(
                 selectedFile.toAbsolutePath().toString()
@@ -415,16 +415,16 @@ public final class CsePageController {
             return;
         }
 
-        encryptedFile = null;
+        encryptedArtifacts = null;
         hideUploadButton();
         hideCancelButton();
 
         encryptButton.setDisable(true);
         cseProgressBar.setProgress(0);
 
-        Task<Path> encryptionTask = new Task<>() {
+        Task<CseEncryptionService.V3Artifacts> encryptionTask = new Task<>() {
             @Override
-            protected Path call() {
+            protected CseEncryptionService.V3Artifacts call() {
                 return encryptionService.encrypt(inputFile);
             }
         };
@@ -437,10 +437,9 @@ public final class CsePageController {
             cseProgressBar.setProgress(1);
             encryptButton.setDisable(false);
 
-            encryptedFile = encryptionTask.getValue();
-            showUploadButton();
-
-            showEncryptionSuccess(encryptedFile);
+            encryptedArtifacts = encryptionTask.getValue();
+            hideUploadButton();
+            showEncryptionSuccess(encryptedArtifacts);
         });
 
         encryptionTask.setOnFailed(workerEvent -> {
@@ -448,7 +447,7 @@ public final class CsePageController {
 
             cseProgressBar.setProgress(0);
             encryptButton.setDisable(false);
-            encryptedFile = null;
+            encryptedArtifacts = null;
             hideUploadButton();
 
             Throwable exception =
@@ -479,12 +478,16 @@ public final class CsePageController {
      */
     @FXML
     private void onUpload(ActionEvent event) {
+        showError("CSEMLK03 upload is not connected yet. All three artifacts must be uploaded together.");
+        hideUploadButton();
+        return;
+        /*
         if (isUploadRunning()) {
             return;
         }
 
-        if (encryptedFile == null
-                || !Files.isRegularFile(encryptedFile)) {
+        if (encryptedArtifacts == null
+                || !Files.isRegularFile(encryptedArtifacts.containerPath())) {
             showError(
                     "Encrypt a file before uploading it."
             );
@@ -515,7 +518,7 @@ public final class CsePageController {
                 LockboxUploadService.UploadResult
                 > uploadFuture =
                 uploadService.upload(
-                        encryptedFile,
+                        encryptedArtifacts.containerPath(),
                         null,
                         accessToken,
                         progress ->
@@ -537,6 +540,7 @@ public final class CsePageController {
                                 )
                         )
         );
+        */
     }
 
     @FXML
@@ -696,7 +700,7 @@ public final class CsePageController {
                 : message;
     }
 
-    private void showEncryptionSuccess(Path outputFile) {
+    private void showEncryptionSuccess(CseEncryptionService.V3Artifacts artifacts) {
         Alert alert = new Alert(
                 Alert.AlertType.INFORMATION
         );
@@ -706,9 +710,10 @@ public final class CsePageController {
                 "The file was encrypted successfully."
         );
         alert.setContentText(
-                "Encrypted file:\n"
-                        + outputFile.toAbsolutePath()
-                        + "\n\nThe Upload button is now available."
+                "Container:\n" + artifacts.containerPath()
+                        + "\n\nManifest:\n" + artifacts.manifestPath()
+                        + "\n\nSignature:\n" + artifacts.signaturePath()
+                        + "\n\nThree-artifact upload is the next step."
         );
 
         alert.showAndWait();

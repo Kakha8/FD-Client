@@ -6,6 +6,7 @@ use std::{
 };
 
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use crate::{dpapi, mldsa};
 
@@ -85,6 +86,25 @@ pub fn sign(message: &[u8]) -> Result<Vec<u8>, MlDsaKeystoreError> {
     let seed = dpapi::unprotect(&protected_seed)?;
     let signature = mldsa::sign_mldsa87(seed.as_slice(), message)?;
     Ok(signature.to_vec())
+}
+
+pub struct StoredSigningKey {
+    private_seed: Zeroizing<Vec<u8>>,
+    public_key: Vec<u8>,
+}
+
+impl StoredSigningKey {
+    pub fn private_seed(&self) -> &[u8] { self.private_seed.as_slice() }
+    pub fn public_key(&self) -> &[u8] { self.public_key.as_slice() }
+}
+
+pub fn load_stored_signing_key() -> Result<StoredSigningKey, MlDsaKeystoreError> {
+    let (private_path, public_path) = key_paths()?;
+    verify_keypair(&private_path, &public_path)?;
+    let protected_seed = fs::read(private_path)?;
+    let private_seed = dpapi::unprotect(&protected_seed)?;
+    let public_key = fs::read(public_path)?;
+    Ok(StoredSigningKey { private_seed, public_key })
 }
 
 fn verify_keypair(private_path: &Path, public_path: &Path) -> Result<(), MlDsaKeystoreError> {
