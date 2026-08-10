@@ -9,6 +9,7 @@ mod key_id;
 mod mldsa;
 mod mldsa_keystore;
 mod metadata_crypto;
+mod metadata_view;
 mod mlkem_keystore;
 mod owner_envelope;
 mod v3_artifacts;
@@ -498,4 +499,34 @@ pub fn sign_with_stored_ml_dsa87<'local>(
             }
         })
         .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "decryptPrivateMetadataV3")]
+pub fn decrypt_private_metadata_v3<'local>(
+    mut unowned_env: EnvUnowned<'local>, _class: jclass,
+    manifest: JByteArray<'local>, signature: JByteArray<'local>, header: JByteArray<'local>,
+) -> jstring {
+    unowned_env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let result = (|| -> Result<String, String> {
+            let manifest = env.convert_byte_array(&manifest).map_err(|e| e.to_string())?;
+            let signature = env.convert_byte_array(&signature).map_err(|e| e.to_string())?;
+            let header = env.convert_byte_array(&header).map_err(|e| e.to_string())?;
+            let signing_public = mldsa_keystore::public_key().map_err(|e| e.to_string())?;
+            let encryption_private = mlkem_keystore::load_stored_ml_kem1024_decapsulation_key()
+                .map_err(|e| e.to_string())?;
+            let view = metadata_view::decrypt_private_metadata(
+                &manifest, &signature, &header, &signing_public, &encryption_private,
+            ).map_err(|e| e.to_string())?;
+            serde_json::to_string(&view).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(json) => Ok(env.new_string(json)?.into_raw()),
+            Err(error) => {
+                eprintln!("Private Lockbox metadata failed: {error}");
+                env.throw_new(JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("Private Lockbox metadata failed: {error}")))?;
+                Ok(null_mut())
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
 }

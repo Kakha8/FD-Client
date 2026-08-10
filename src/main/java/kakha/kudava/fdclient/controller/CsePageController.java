@@ -10,6 +10,8 @@ import javafx.scene.Node;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.TextField;
@@ -22,6 +24,7 @@ import kakha.kudava.fdclient.service.CseEncryptionService;
 import kakha.kudava.fdclient.service.LockboxUploadService;
 import kakha.kudava.fdclient.service.LockboxEnrollmentService;
 import kakha.kudava.fdclient.service.LockboxDeviceIdentity;
+import kakha.kudava.fdclient.service.LockboxMetadataService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -53,6 +56,9 @@ public final class CsePageController {
     private ProgressBar cseProgressBar;
 
     @FXML
+    private ListView<LockboxMetadataService.PrivateFile> lockboxFileList;
+
+    @FXML
     private Button uploadBtn;
 
     @FXML
@@ -66,6 +72,9 @@ public final class CsePageController {
 
     private final LockboxEnrollmentService enrollmentService =
             new LockboxEnrollmentService();
+
+    private final LockboxMetadataService metadataService =
+            new LockboxMetadataService();
 
     private AuthService authService;
     private Path selectedFile;
@@ -105,6 +114,19 @@ public final class CsePageController {
 
         hideUploadButton();
         hideCancelButton();
+
+        lockboxFileList.setPlaceholder(new Label("No Lockbox files."));
+        lockboxFileList.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(LockboxMetadataService.PrivateFile file, boolean empty) {
+                super.updateItem(file, empty);
+                if (empty || file == null) {
+                    setText(null);
+                } else {
+                    setText(file.filename() + "    " + readableSize(file.plaintextSize()));
+                }
+            }
+        });
 
         showLockboxState(
                 LockboxUiState.LOADING,
@@ -235,10 +257,10 @@ public final class CsePageController {
         }
 
         switch (status.deviceStatus()) {
-            case ACTIVE -> showLockboxState(
-                    LockboxUiState.READY,
-                    "Lockbox is active on this device."
-            );
+            case ACTIVE -> {
+                showLockboxState(LockboxUiState.READY, "Lockbox is active on this device.");
+                loadPrivateFileNames();
+            }
             case NOT_REGISTERED -> showLockboxState(
                     LockboxUiState.BLOCKED,
                     "Lockbox is enabled, but this device is not registered."
@@ -309,6 +331,7 @@ public final class CsePageController {
             pendingEnrollment = null;
             showLockboxState(LockboxUiState.READY,
                     "Lockbox is active on this device.");
+            loadPrivateFileNames();
         }));
     }
 
@@ -596,6 +619,7 @@ public final class CsePageController {
         hideUploadButton();
 
         showUploadSuccess(result);
+        loadPrivateFileNames();
     }
 
     private boolean isUploadRunning() {
@@ -619,6 +643,37 @@ public final class CsePageController {
         } catch (RuntimeException exception) {
             return null;
         }
+    }
+
+    private void loadPrivateFileNames() {
+        if (authService == null || !authService.isAuthenticated()) return;
+        lockboxFileList.setDisable(true);
+        lockboxFileList.setPlaceholder(new Label("Loading encrypted filenames..."));
+        metadataService.list(authService.getAccessToken())
+                .whenComplete((files, error) -> Platform.runLater(() -> {
+                    lockboxFileList.setDisable(false);
+                    if (error != null) {
+                        lockboxFileList.getItems().clear();
+                        lockboxFileList.setPlaceholder(new Label(
+                                messageOf(error, "Could not load Lockbox filenames.")));
+                        return;
+                    }
+                    lockboxFileList.getItems().setAll(files);
+                    lockboxFileList.setPlaceholder(new Label("No Lockbox files."));
+                }));
+    }
+
+    private String readableSize(long bytes) {
+        if (bytes < 0) return "unknown size";
+        if (bytes < 1024) return bytes + " B";
+        double value = bytes;
+        String[] units = {"KB", "MB", "GB", "TB"};
+        int unit = -1;
+        do {
+            value /= 1024.0;
+            unit++;
+        } while (value >= 1024.0 && unit < units.length - 1);
+        return String.format(java.util.Locale.ROOT, "%.1f %s", value, units[unit]);
     }
 
     private void startProgressPolling() {

@@ -56,6 +56,12 @@ public final class NativeCryptoBridge {
             long modifiedAtUnixMillis
     );
 
+    public static native String decryptPrivateMetadataV3(
+            byte[] manifest,
+            byte[] signature,
+            byte[] encryptedHeader
+    );
+
     public static native boolean decryptSelectedFile(String inputPath);
 
     public static native boolean decryptSelectedFileTo(
