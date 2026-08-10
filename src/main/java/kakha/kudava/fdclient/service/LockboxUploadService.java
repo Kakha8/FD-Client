@@ -52,35 +52,30 @@ public final class LockboxUploadService {
                     .build();
 
     /**
-     * Uploads an already encrypted .cseml/.fdcse file.
-     *
-     * @param encryptedFile encrypted container produced by Rust
+     * Uploads the complete signed CSEMLK03 artifact set.
      * @param parentFolderId null uploads to the Lockbox root
      * @param accessToken current bearer access token
      * @param progressListener receives values from 0.0 through 1.0
      */
     public CompletableFuture<UploadResult> upload(
-            Path encryptedFile,
+            CseEncryptionService.V3Artifacts artifacts,
             Long parentFolderId,
             String accessToken,
             DoubleConsumer progressListener
     ) {
         Objects.requireNonNull(
-                encryptedFile,
-                "encryptedFile"
+                artifacts,
+                "artifacts"
         );
         Objects.requireNonNull(
                 progressListener,
                 "progressListener"
         );
 
-        if (!Files.isRegularFile(
-                encryptedFile,
-                LinkOption.NOFOLLOW_LINKS
-        )) {
+        if (!validArtifactSet(artifacts)) {
             return CompletableFuture.failedFuture(
                     new UploadException(
-                            "The encrypted output file does not exist."
+                            "The complete encrypted artifact set does not exist or is inconsistent."
                     )
             );
         }
@@ -99,8 +94,7 @@ public final class LockboxUploadService {
 
         try {
             multipartBody = createMultipartBody(
-                    encryptedFile,
-                    parentFolderId,
+                    artifacts,
                     boundary
             );
         } catch (Exception exception) {
@@ -119,7 +113,7 @@ public final class LockboxUploadService {
                 );
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(UPLOAD_URI)
+                .uri(uploadUri(parentFolderId))
                 .timeout(UPLOAD_TIMEOUT)
                 .header(
                         "Authorization",
@@ -141,67 +135,21 @@ public final class LockboxUploadService {
                                 StandardCharsets.UTF_8
                         )
                 )
-                .thenApply(this::handleResponse);
+                .thenApply(response -> handleResponse(response, artifacts));
     }
 
     private HttpRequest.BodyPublisher createMultipartBody(
-            Path encryptedFile,
-            Long parentFolderId,
+            CseEncryptionService.V3Artifacts artifacts,
             String boundary
     ) throws Exception {
-        String safeFileName =
-                safeMultipartFileName(
-                        encryptedFile.getFileName().toString()
-                );
-
         List<HttpRequest.BodyPublisher> publishers =
                 new ArrayList<>();
-
-        String fileHeader =
-                "--" + boundary + "\r\n"
-                        + "Content-Disposition: form-data; "
-                        + "name=\"file\"; "
-                        + "filename=\"" + safeFileName + "\"\r\n"
-                        + "Content-Type: application/octet-stream\r\n"
-                        + "\r\n";
-
-        publishers.add(
-                HttpRequest.BodyPublishers.ofByteArray(
-                        fileHeader.getBytes(StandardCharsets.UTF_8)
-                )
-        );
-
-        publishers.add(
-                HttpRequest.BodyPublishers.ofFile(
-                        encryptedFile
-                )
-        );
-
-        publishers.add(
-                HttpRequest.BodyPublishers.ofByteArray(
-                        "\r\n".getBytes(StandardCharsets.UTF_8)
-                )
-        );
-
-        if (parentFolderId != null) {
-            String parentPart =
-                    "--" + boundary + "\r\n"
-                            + "Content-Disposition: form-data; "
-                            + "name=\"parentFolderId\"\r\n"
-                            + "Content-Type: text/plain; "
-                            + "charset=UTF-8\r\n"
-                            + "\r\n"
-                            + parentFolderId
-                            + "\r\n";
-
-            publishers.add(
-                    HttpRequest.BodyPublishers.ofByteArray(
-                            parentPart.getBytes(
-                                    StandardCharsets.UTF_8
-                            )
-                    )
-            );
-        }
+        addFilePart(publishers, boundary, "container", artifacts.containerPath(),
+                "application/x-filedrive-csemlk03");
+        addFilePart(publishers, boundary, "manifest", artifacts.manifestPath(),
+                "application/x-filedrive-lockbox-manifest");
+        addFilePart(publishers, boundary, "signature", artifacts.signaturePath(),
+                "application/x-filedrive-lockbox-signature");
 
         String closingBoundary =
                 "--" + boundary + "--\r\n";
@@ -221,8 +169,39 @@ public final class LockboxUploadService {
         );
     }
 
+    private void addFilePart(List<HttpRequest.BodyPublisher> publishers,
+                             String boundary, String field, Path file,
+                             String contentType) throws Exception {
+        String header = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"" + field
+                + "\"; filename=\"" + safeMultipartFileName(file.getFileName().toString()) + "\"\r\n"
+                + "Content-Type: " + contentType + "\r\n\r\n";
+        publishers.add(HttpRequest.BodyPublishers.ofByteArray(header.getBytes(StandardCharsets.UTF_8)));
+        publishers.add(HttpRequest.BodyPublishers.ofFile(file));
+        publishers.add(HttpRequest.BodyPublishers.ofByteArray("\r\n".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private URI uploadUri(Long parentFolderId) {
+        if (parentFolderId == null) return UPLOAD_URI;
+        if (parentFolderId < 1) throw new UploadException("Parent folder ID must be positive.");
+        return URI.create(UPLOAD_URI + "?parentFolderId=" + parentFolderId);
+    }
+
+    private boolean validArtifactSet(CseEncryptionService.V3Artifacts artifacts) {
+        String base = artifacts.clientFileId().toString();
+        return artifactMatches(artifacts.containerPath(), base + ".fdcse")
+                && artifactMatches(artifacts.manifestPath(), base + ".fdmanifest")
+                && artifactMatches(artifacts.signaturePath(), base + ".fdsig");
+    }
+
+    private boolean artifactMatches(Path path, String expectedName) {
+        return path != null && Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+                && path.getFileName().toString().equals(expectedName);
+    }
+
     private UploadResult handleResponse(
-            HttpResponse<String> response
+            HttpResponse<String> response,
+            CseEncryptionService.V3Artifacts expected
     ) {
         int status = response.statusCode();
 
@@ -231,17 +210,29 @@ public final class LockboxUploadService {
                 JsonNode json =
                         objectMapper.readTree(response.body());
 
-                return new UploadResult(
+                UploadResult result = new UploadResult(
                         json.path("id").asLong(),
-                        json.path("fileName").asText(),
+                        UUID.fromString(json.path("clientFileId").asText()),
+                        json.path("revision").asLong(),
                         nullableLong(json.get("parentId")),
-                        json.path("ciphertextSize").asLong(),
-                        json.path("ciphertextChecksum").asText(),
+                        json.path("containerSize").asLong(),
+                        json.path("containerHash").asText(),
                         json.path("formatVersion").asInt(),
-                        json.path("algorithmSuite").asText(),
-                        json.path("chunkSize").asInt(),
+                        json.path("suiteId").asInt(),
                         parseInstant(json.path("createdAt").asText())
                 );
+                if (result.id() < 1
+                        || !result.clientFileId().equals(expected.clientFileId())
+                        || result.revision() != expected.revision()
+                        || result.containerSize() != expected.containerSize()
+                        || !result.containerHash().equalsIgnoreCase(expected.containerHash())
+                        || result.formatVersion() != 3
+                        || result.suiteId() != 1) {
+                    throw new UploadException(
+                            "The server response does not match the uploaded CSEMLK03 artifacts."
+                    );
+                }
+                return result;
             } catch (Exception exception) {
                 throw new CompletionException(
                         new UploadException(
@@ -314,13 +305,13 @@ public final class LockboxUploadService {
 
     public record UploadResult(
             long id,
-            String fileName,
+            UUID clientFileId,
+            long revision,
             Long parentId,
-            long ciphertextSize,
-            String ciphertextChecksum,
+            long containerSize,
+            String containerHash,
             int formatVersion,
-            String algorithmSuite,
-            int chunkSize,
+            int suiteId,
             Instant createdAt
     ) {
     }

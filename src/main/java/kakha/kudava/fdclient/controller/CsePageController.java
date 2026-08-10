@@ -438,7 +438,7 @@ public final class CsePageController {
             encryptButton.setDisable(false);
 
             encryptedArtifacts = encryptionTask.getValue();
-            hideUploadButton();
+            showUploadButton();
             showEncryptionSuccess(encryptedArtifacts);
         });
 
@@ -478,16 +478,14 @@ public final class CsePageController {
      */
     @FXML
     private void onUpload(ActionEvent event) {
-        showError("CSEMLK03 upload is not connected yet. All three artifacts must be uploaded together.");
-        hideUploadButton();
-        return;
-        /*
         if (isUploadRunning()) {
             return;
         }
 
         if (encryptedArtifacts == null
-                || !Files.isRegularFile(encryptedArtifacts.containerPath())) {
+                || !Files.isRegularFile(encryptedArtifacts.containerPath())
+                || !Files.isRegularFile(encryptedArtifacts.manifestPath())
+                || !Files.isRegularFile(encryptedArtifacts.signaturePath())) {
             showError(
                     "Encrypt a file before uploading it."
             );
@@ -518,7 +516,7 @@ public final class CsePageController {
                 LockboxUploadService.UploadResult
                 > uploadFuture =
                 uploadService.upload(
-                        encryptedArtifacts.containerPath(),
+                        encryptedArtifacts,
                         null,
                         accessToken,
                         progress ->
@@ -540,7 +538,6 @@ public final class CsePageController {
                                 )
                         )
         );
-        */
     }
 
     @FXML
@@ -713,7 +710,7 @@ public final class CsePageController {
                 "Container:\n" + artifacts.containerPath()
                         + "\n\nManifest:\n" + artifacts.manifestPath()
                         + "\n\nSignature:\n" + artifacts.signaturePath()
-                        + "\n\nThree-artifact upload is the next step."
+                        + "\n\nThe complete artifact set is ready to upload."
         );
 
         alert.showAndWait();
@@ -733,8 +730,12 @@ public final class CsePageController {
         alert.setContentText(
                 "Server file ID: "
                         + result.id()
-                        + "\nCiphertext size: "
-                        + result.ciphertextSize()
+                        + "\nClient file ID: "
+                        + result.clientFileId()
+                        + "\nRevision: "
+                        + result.revision()
+                        + "\nContainer size: "
+                        + result.containerSize()
                         + " bytes"
         );
 
