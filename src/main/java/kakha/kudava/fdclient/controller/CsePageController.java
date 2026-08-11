@@ -31,6 +31,7 @@ import kakha.kudava.fdclient.service.LockboxUploadService;
 import kakha.kudava.fdclient.service.LockboxEnrollmentService;
 import kakha.kudava.fdclient.service.LockboxDeviceIdentity;
 import kakha.kudava.fdclient.service.LockboxMetadataService;
+import kakha.kudava.fdclient.service.LockboxDownloadService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -100,6 +101,9 @@ public final class CsePageController {
     private final LockboxMetadataService metadataService =
             new LockboxMetadataService();
 
+    private final LockboxDownloadService downloadService =
+            new LockboxDownloadService();
+
     private AuthService authService;
     private Path selectedFile;
     private CseEncryptionService.V3Artifacts encryptedArtifacts;
@@ -158,10 +162,11 @@ public final class CsePageController {
         actionsColumn.setCellFactory(column -> new TableCell<>() {
             private final MenuButton menu = new MenuButton("⋮");
             private final MenuItem export = new MenuItem("Export");
+            private final MenuItem download = new MenuItem("Download");
             {
-                menu.getItems().add(export);
                 menu.setStyle("-fx-font-size: 17px; -fx-padding: 0 6 0 6;");
                 export.setOnAction(event -> exportLocalArtifacts(getTableRow().getItem()));
+                download.setOnAction(event -> downloadWebArtifacts(getTableRow().getItem(), menu));
             }
 
             @Override
@@ -169,7 +174,12 @@ public final class CsePageController {
                 super.updateItem(ignored, empty);
                 LockboxMetadataService.PrivateFile file =
                         empty || getTableRow() == null ? null : getTableRow().getItem();
-                setGraphic(file != null && file.localContainerPath() != null ? menu : null);
+                menu.getItems().clear();
+                if (file != null && file.localContainerPath() != null) menu.getItems().add(export);
+                if (file != null && file.serverId() != null && file.localContainerPath() == null) {
+                    menu.getItems().add(download);
+                }
+                setGraphic(file != null && !menu.getItems().isEmpty() ? menu : null);
                 setText(null);
             }
         });
@@ -793,6 +803,35 @@ public final class CsePageController {
         } catch (Exception error) {
             showError(messageOf(error, "The Lockbox artifacts could not be exported."));
         }
+    }
+
+    private void downloadWebArtifacts(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null || file.serverId() == null) return;
+        if (authService == null || !authService.isAuthenticated()) {
+            showError("Your session is not authenticated.");
+            return;
+        }
+
+        menu.setDisable(true);
+        cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        downloadService.download(file, authService.getAccessToken())
+                .whenComplete((ignored, error) -> Platform.runLater(() -> {
+                    menu.setDisable(false);
+                    cseProgressBar.setProgress(error == null ? 1 : 0);
+                    if (error != null) {
+                        showError(messageOf(error, "The Lockbox file could not be downloaded."));
+                        return;
+                    }
+                    loadPrivateFileNames();
+                    Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                    alert.setTitle("Download complete");
+                    alert.setHeaderText("The encrypted Lockbox artifact set is now local.");
+                    alert.setContentText(encryptionService.artifactDirectory().toString());
+                    alert.showAndWait();
+                }));
     }
 
     private void startProgressPolling() {

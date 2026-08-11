@@ -411,7 +411,9 @@ public final class LockboxUploadService {
 
                         @Override
                         public void onComplete() {
-                            progressListener.accept(1.0);
+                            // The request body has reached the HTTP client, but the
+                            // backend still has to hash, validate, and store it.
+                            progressListener.accept(-1.0);
                             subscriber.onComplete();
                         }
 
@@ -439,7 +441,7 @@ public final class LockboxUploadService {
 
                             double progress =
                                     Math.min(
-                                            1.0,
+                                            0.95,
                                             (double) sent
                                                     / contentLength
                                     );
