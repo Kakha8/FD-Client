@@ -30,13 +30,14 @@ public final class CseEncryptionService {
             if (mimeType == null || mimeType.isBlank()) {
                 mimeType = "application/octet-stream";
             }
+            Path outputDirectory = artifactDirectory();
             UUID deviceId = LockboxDeviceIdentity.loadOrCreate();
             String response = NativeCryptoBridge.encryptFileV3(
-                    input.toString(), input.getParent().toString(),
+                    input.toString(), outputDirectory.toString(),
                     input.getFileName().toString(), mimeType, uuidBytes(deviceId),
                     attributes.creationTime().toMillis(), attributes.lastModifiedTime().toMillis()
             );
-            return validateResponse(response, input.getParent());
+            return validateResponse(response, outputDirectory);
         } catch (CseEncryptionException e) {
             throw e;
         } catch (Exception e) {
@@ -46,6 +47,26 @@ public final class CseEncryptionService {
 
     public double progress() {
         return Math.max(0, Math.min(NativeCryptoBridge.getFileCryptoProgress(), 100)) / 100.0;
+    }
+
+    public Path artifactDirectory() {
+        String localAppData = System.getenv("LOCALAPPDATA");
+        if (localAppData == null || localAppData.isBlank()) {
+            throw new CseEncryptionException("LOCALAPPDATA is unavailable.");
+        }
+        Path directory = Path.of(localAppData, "FileDrive", "Lockbox", "artifacts")
+                .toAbsolutePath().normalize();
+        try {
+            Files.createDirectories(directory);
+        } catch (IOException error) {
+            throw new CseEncryptionException(
+                    "Could not create the Lockbox artifact directory: " + directory, error);
+        }
+        if (!Files.isDirectory(directory)) {
+            throw new CseEncryptionException(
+                    "The Lockbox artifact path is not a directory: " + directory);
+        }
+        return directory;
     }
 
     private V3Artifacts validateResponse(String json, Path expectedDirectory) throws IOException {

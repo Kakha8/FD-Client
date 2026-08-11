@@ -2,7 +2,8 @@
 
 <?import javafx.scene.control.Button?>
 <?import javafx.scene.control.Label?>
-<?import javafx.scene.control.ListView?>
+<?import javafx.scene.control.TableColumn?>
+<?import javafx.scene.control.TableView?>
 <?import javafx.scene.control.ProgressBar?>
 <?import javafx.scene.control.ProgressIndicator?>
 <?import javafx.scene.control.ScrollPane?>
@@ -36,6 +37,11 @@
                     mnemonicParsing="false"
                     onAction="#onActivateLockbox"
                     text="Activate Lockbox" />
+            <Button fx:id="refreshLockboxBtn"
+                    layoutX="470.0" layoutY="27.0"
+                    managed="false" mnemonicParsing="false"
+                    onAction="#onRefreshLockbox"
+                    text="Refresh" visible="false" />
          </children>
       </AnchorPane>
 
@@ -43,8 +49,15 @@
                   disable="true" layoutY="108.0"
                   prefHeight="380.0" prefWidth="600.0">
          <children>
-            <ListView fx:id="lockboxFileList" layoutX="23.0" layoutY="0.0"
-                      prefHeight="190.0" prefWidth="555.0" />
+            <TableView fx:id="lockboxFileTable" layoutX="23.0" layoutY="0.0"
+                       prefHeight="190.0" prefWidth="555.0">
+               <columns>
+                  <TableColumn fx:id="nameColumn" prefWidth="255.0" text="Name" />
+                  <TableColumn fx:id="sizeColumn" prefWidth="110.0" text="Size" />
+                  <TableColumn fx:id="locationColumn" prefWidth="135.0" text="Location" />
+                  <TableColumn fx:id="actionsColumn" prefWidth="45.0" sortable="false" text="" />
+               </columns>
+            </TableView>
 
             <Label layoutX="35.0" layoutY="218.0"
                    prefHeight="17.0" prefWidth="63.0" text="Select file:" />

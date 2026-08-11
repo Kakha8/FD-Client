@@ -10,13 +10,19 @@ import javafx.scene.Node;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
-import javafx.scene.control.ListCell;
-import javafx.scene.control.ListView;
+import javafx.scene.control.TableCell;
+import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableView;
+import javafx.scene.control.MenuButton;
+import javafx.scene.control.MenuItem;
+import javafx.beans.property.ReadOnlyObjectWrapper;
+import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.AnchorPane;
 import javafx.stage.FileChooser;
+import javafx.stage.DirectoryChooser;
 import javafx.stage.Window;
 import javafx.util.Duration;
 import kakha.kudava.fdclient.service.AuthService;
@@ -29,6 +35,9 @@ import kakha.kudava.fdclient.service.LockboxMetadataService;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.net.InetAddress;
 import java.util.UUID;
@@ -44,6 +53,9 @@ public final class CsePageController {
     private Button activateLockboxBtn;
 
     @FXML
+    private Button refreshLockboxBtn;
+
+    @FXML
     private ProgressIndicator activationProgress;
 
     @FXML
@@ -56,7 +68,19 @@ public final class CsePageController {
     private ProgressBar cseProgressBar;
 
     @FXML
-    private ListView<LockboxMetadataService.PrivateFile> lockboxFileList;
+    private TableView<LockboxMetadataService.PrivateFile> lockboxFileTable;
+
+    @FXML
+    private TableColumn<LockboxMetadataService.PrivateFile, String> nameColumn;
+
+    @FXML
+    private TableColumn<LockboxMetadataService.PrivateFile, Long> sizeColumn;
+
+    @FXML
+    private TableColumn<LockboxMetadataService.PrivateFile, String> locationColumn;
+
+    @FXML
+    private TableColumn<LockboxMetadataService.PrivateFile, Void> actionsColumn;
 
     @FXML
     private Button uploadBtn;
@@ -115,16 +139,38 @@ public final class CsePageController {
         hideUploadButton();
         hideCancelButton();
 
-        lockboxFileList.setPlaceholder(new Label("No Lockbox files."));
-        lockboxFileList.setCellFactory(list -> new ListCell<>() {
+        lockboxFileTable.setPlaceholder(new Label("No Lockbox files."));
+        nameColumn.setCellValueFactory(row -> new ReadOnlyStringWrapper(row.getValue().filename()));
+        sizeColumn.setCellValueFactory(row -> new ReadOnlyObjectWrapper<>(row.getValue().plaintextSize()));
+        sizeColumn.setCellFactory(column -> new TableCell<>() {
             @Override
-            protected void updateItem(LockboxMetadataService.PrivateFile file, boolean empty) {
-                super.updateItem(file, empty);
-                if (empty || file == null) {
+            protected void updateItem(Long size, boolean empty) {
+                super.updateItem(size, empty);
+                if (empty || size == null) {
                     setText(null);
                 } else {
-                    setText(file.filename() + "    " + readableSize(file.plaintextSize()));
+                    setText(readableSize(size));
                 }
+            }
+        });
+        locationColumn.setCellValueFactory(row ->
+                new ReadOnlyStringWrapper(row.getValue().location().displayName()));
+        actionsColumn.setCellFactory(column -> new TableCell<>() {
+            private final MenuButton menu = new MenuButton("⋮");
+            private final MenuItem export = new MenuItem("Export");
+            {
+                menu.getItems().add(export);
+                menu.setStyle("-fx-font-size: 17px; -fx-padding: 0 6 0 6;");
+                export.setOnAction(event -> exportLocalArtifacts(getTableRow().getItem()));
+            }
+
+            @Override
+            protected void updateItem(Void ignored, boolean empty) {
+                super.updateItem(ignored, empty);
+                LockboxMetadataService.PrivateFile file =
+                        empty || getTableRow() == null ? null : getTableRow().getItem();
+                setGraphic(file != null && file.localContainerPath() != null ? menu : null);
+                setText(null);
             }
         });
 
@@ -367,6 +413,11 @@ public final class CsePageController {
                         : "Activate Lockbox"
         );
 
+        boolean ready = state == LockboxUiState.READY;
+        refreshLockboxBtn.setVisible(ready);
+        refreshLockboxBtn.setManaged(ready);
+        refreshLockboxBtn.setDisable(!ready);
+
         lockboxContentPane.setDisable(
                 state != LockboxUiState.READY
         );
@@ -463,6 +514,7 @@ public final class CsePageController {
             encryptedArtifacts = encryptionTask.getValue();
             showUploadButton();
             showEncryptionSuccess(encryptedArtifacts);
+            loadPrivateFileNames();
         });
 
         encryptionTask.setOnFailed(workerEvent -> {
@@ -647,20 +699,27 @@ public final class CsePageController {
 
     private void loadPrivateFileNames() {
         if (authService == null || !authService.isAuthenticated()) return;
-        lockboxFileList.setDisable(true);
-        lockboxFileList.setPlaceholder(new Label("Loading encrypted filenames..."));
+        refreshLockboxBtn.setDisable(true);
+        lockboxFileTable.setDisable(true);
+        lockboxFileTable.setPlaceholder(new Label("Loading Lockbox files..."));
         metadataService.list(authService.getAccessToken())
                 .whenComplete((files, error) -> Platform.runLater(() -> {
-                    lockboxFileList.setDisable(false);
+                    lockboxFileTable.setDisable(false);
+                    refreshLockboxBtn.setDisable(false);
                     if (error != null) {
-                        lockboxFileList.getItems().clear();
-                        lockboxFileList.setPlaceholder(new Label(
+                        lockboxFileTable.getItems().clear();
+                        lockboxFileTable.setPlaceholder(new Label(
                                 messageOf(error, "Could not load Lockbox filenames.")));
                         return;
                     }
-                    lockboxFileList.getItems().setAll(files);
-                    lockboxFileList.setPlaceholder(new Label("No Lockbox files."));
+                    lockboxFileTable.getItems().setAll(files);
+                    lockboxFileTable.setPlaceholder(new Label("No Lockbox files."));
                 }));
+    }
+
+    @FXML
+    private void onRefreshLockbox() {
+        loadPrivateFileNames();
     }
 
     private String readableSize(long bytes) {
@@ -674,6 +733,66 @@ public final class CsePageController {
             unit++;
         } while (value >= 1024.0 && unit < units.length - 1);
         return String.format(java.util.Locale.ROOT, "%.1f %s", value, units[unit]);
+    }
+
+    private void exportLocalArtifacts(LockboxMetadataService.PrivateFile file) {
+        if (file == null || file.localContainerPath() == null) return;
+
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Export Lockbox artifact set");
+        File selectedDirectory = chooser.showDialog(lockboxFileTable.getScene().getWindow());
+        if (selectedDirectory == null) return;
+
+        Path destination = selectedDirectory.toPath().toAbsolutePath().normalize();
+        Path sourceContainer = file.localContainerPath().toAbsolutePath().normalize();
+        Path sourceDirectory = sourceContainer.getParent();
+        String base = file.clientFileId().toString();
+        List<Path> sources = List.of(
+                sourceDirectory.resolve(base + ".fdcse"),
+                sourceDirectory.resolve(base + ".fdmanifest"),
+                sourceDirectory.resolve(base + ".fdsig")
+        );
+        List<Path> targets = sources.stream()
+                .map(source -> destination.resolve(source.getFileName()))
+                .toList();
+
+        try {
+            for (Path source : sources) {
+                if (!Files.isRegularFile(source)) {
+                    throw new IOException("The local artifact set is incomplete.");
+                }
+            }
+            for (Path target : targets) {
+                if (Files.exists(target)) {
+                    throw new IOException("Export target already exists: " + target.getFileName());
+                }
+            }
+
+            List<Path> created = new ArrayList<>();
+            try {
+                for (int index = 0; index < sources.size(); index++) {
+                    Files.copy(sources.get(index), targets.get(index));
+                    created.add(targets.get(index));
+                }
+            } catch (Exception error) {
+                for (Path path : created) {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException cleanupError) {
+                        error.addSuppressed(cleanupError);
+                    }
+                }
+                throw error;
+            }
+
+            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            alert.setTitle("Export complete");
+            alert.setHeaderText("The Lockbox artifact set was exported.");
+            alert.setContentText(destination.toString());
+            alert.showAndWait();
+        } catch (Exception error) {
+            showError(messageOf(error, "The Lockbox artifacts could not be exported."));
+        }
     }
 
     private void startProgressPolling() {
