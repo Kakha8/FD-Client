@@ -10,7 +10,10 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.UUID;
 
 public final class CseEncryptionService {
@@ -67,6 +70,62 @@ public final class CseEncryptionService {
                     "The Lockbox artifact path is not a directory: " + directory);
         }
         return directory;
+    }
+
+    public V3Artifacts loadLocalArtifacts(
+            UUID clientFileId,
+            Path containerPath
+    ) {
+        Objects.requireNonNull(clientFileId, "clientFileId");
+        Objects.requireNonNull(containerPath, "containerPath");
+
+        Path container = containerPath.toAbsolutePath().normalize();
+        Path directory = artifactDirectory();
+        String base = clientFileId.toString();
+        Path manifest = directory.resolve(base + ".fdmanifest");
+        Path signature = directory.resolve(base + ".fdsig");
+
+        if (!directory.equals(container.getParent())
+                || !container.getFileName().toString().equals(base + ".fdcse")
+                || !Files.isRegularFile(container)
+                || !Files.isRegularFile(manifest)
+                || !Files.isRegularFile(signature)) {
+            throw new CseEncryptionException("The local Lockbox artifact set is incomplete.");
+        }
+
+        try {
+            byte[] bytes = Files.readAllBytes(manifest);
+            if (bytes.length != 264
+                    || !Arrays.equals(Arrays.copyOfRange(bytes, 0, 8),
+                    "FDMAN003".getBytes(StandardCharsets.US_ASCII))
+                    || !Arrays.equals(Arrays.copyOfRange(bytes, 16, 32), uuidBytes(clientFileId))) {
+                throw new CseEncryptionException("The local Lockbox manifest is invalid.");
+            }
+
+            ByteBuffer manifestData = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            long revision = manifestData.getLong(32);
+            long containerSize = manifestData.getLong(40);
+            if (revision < 1 || containerSize < 0 || Files.size(container) != containerSize) {
+                throw new CseEncryptionException("The local container does not match its manifest.");
+            }
+
+            HexFormat hex = HexFormat.of();
+            return new V3Artifacts(
+                    clientFileId,
+                    container,
+                    manifest,
+                    signature,
+                    hex.formatHex(bytes, 48, 112),
+                    containerSize,
+                    hex.formatHex(bytes, 112, 144),
+                    hex.formatHex(bytes, 144, 176),
+                    revision
+            );
+        } catch (CseEncryptionException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new CseEncryptionException("Could not load the local Lockbox artifacts.", error);
+        }
     }
 
     private V3Artifacts validateResponse(String json, Path expectedDirectory) throws IOException {

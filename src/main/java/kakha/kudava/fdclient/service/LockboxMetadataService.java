@@ -60,7 +60,7 @@ public final class LockboxMetadataService {
 
     private List<PrivateFile> parseResponse(HttpResponse<String> response) {
         if (response.statusCode() == 401 || response.statusCode() == 403) {
-            throw new IllegalStateException("Your session is no longer authorized.");
+            throw new UnauthorizedException("Your session is no longer authorized.");
         }
         if (response.statusCode() != 200) {
             throw new IllegalStateException("Lockbox file listing failed with HTTP "
@@ -207,5 +207,11 @@ public final class LockboxMetadataService {
         private final String displayName;
         Location(String displayName) { this.displayName = displayName; }
         public String displayName() { return displayName; }
+    }
+
+    public static final class UnauthorizedException extends IllegalStateException {
+        public UnauthorizedException(String message) {
+            super(message);
+        }
     }
 }

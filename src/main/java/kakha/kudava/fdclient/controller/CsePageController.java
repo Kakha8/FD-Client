@@ -32,6 +32,7 @@ import kakha.kudava.fdclient.service.LockboxEnrollmentService;
 import kakha.kudava.fdclient.service.LockboxDeviceIdentity;
 import kakha.kudava.fdclient.service.LockboxMetadataService;
 import kakha.kudava.fdclient.service.LockboxDownloadService;
+import kakha.kudava.fdclient.service.LockboxDeletionService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -104,6 +105,9 @@ public final class CsePageController {
     private final LockboxDownloadService downloadService =
             new LockboxDownloadService();
 
+    private final LockboxDeletionService deletionService =
+            new LockboxDeletionService();
+
     private AuthService authService;
     private Path selectedFile;
     private CseEncryptionService.V3Artifacts encryptedArtifacts;
@@ -162,11 +166,17 @@ public final class CsePageController {
         actionsColumn.setCellFactory(column -> new TableCell<>() {
             private final MenuButton menu = new MenuButton("⋮");
             private final MenuItem export = new MenuItem("Export");
+            private final MenuItem upload = new MenuItem("Upload");
             private final MenuItem download = new MenuItem("Download");
+            private final MenuItem deleteLocal = new MenuItem("Delete locally");
+            private final MenuItem deleteWeb = new MenuItem("Delete from web");
             {
                 menu.setStyle("-fx-font-size: 17px; -fx-padding: 0 6 0 6;");
                 export.setOnAction(event -> exportLocalArtifacts(getTableRow().getItem()));
+                upload.setOnAction(event -> uploadLocalArtifacts(getTableRow().getItem(), menu));
                 download.setOnAction(event -> downloadWebArtifacts(getTableRow().getItem(), menu));
+                deleteLocal.setOnAction(event -> deleteLocalArtifacts(getTableRow().getItem(), menu));
+                deleteWeb.setOnAction(event -> deleteWebArtifacts(getTableRow().getItem(), menu));
             }
 
             @Override
@@ -176,8 +186,17 @@ public final class CsePageController {
                         empty || getTableRow() == null ? null : getTableRow().getItem();
                 menu.getItems().clear();
                 if (file != null && file.localContainerPath() != null) menu.getItems().add(export);
+                if (file != null && file.localContainerPath() != null && file.serverId() == null) {
+                    menu.getItems().add(upload);
+                }
                 if (file != null && file.serverId() != null && file.localContainerPath() == null) {
                     menu.getItems().add(download);
+                }
+                if (file != null && file.localContainerPath() != null) {
+                    menu.getItems().add(deleteLocal);
+                }
+                if (file != null && file.serverId() != null) {
+                    menu.getItems().add(deleteWeb);
                 }
                 setGraphic(file != null && !menu.getItems().isEmpty() ? menu : null);
                 setText(null);
@@ -198,7 +217,7 @@ public final class CsePageController {
         }
 
         if (retryStatusCheck) {
-            checkLockboxStatus();
+            refreshSessionAndCheckStatus();
             return;
         }
 
@@ -234,6 +253,42 @@ public final class CsePageController {
                         )
                 )
         );
+    }
+
+    private void refreshSessionAndCheckStatus() {
+        if (authService == null) {
+            showLockboxState(
+                    LockboxUiState.ERROR,
+                    "No authentication session is available. Log in again."
+            );
+            return;
+        }
+
+        retryStatusCheck = false;
+        showLockboxState(
+                LockboxUiState.LOADING,
+                "Refreshing your session..."
+        );
+
+        CompletableFuture<String> refresh = authService.refresh();
+        activeEnrollment = refresh;
+        refresh.whenComplete((accessToken, error) -> Platform.runLater(() -> {
+            if (activeEnrollment != refresh) {
+                return;
+            }
+            activeEnrollment = null;
+
+            if (error != null) {
+                retryStatusCheck = true;
+                showLockboxState(
+                        LockboxUiState.ERROR,
+                        messageOf(error, "Could not refresh your session. Log in again.")
+                );
+                return;
+            }
+
+            checkLockboxStatus();
+        }));
     }
 
     private void checkLockboxStatus() {
@@ -708,23 +763,62 @@ public final class CsePageController {
     }
 
     private void loadPrivateFileNames() {
+        loadPrivateFileNames(true);
+    }
+
+    private void loadPrivateFileNames(boolean allowSessionRefresh) {
         if (authService == null || !authService.isAuthenticated()) return;
         refreshLockboxBtn.setDisable(true);
         lockboxFileTable.setDisable(true);
         lockboxFileTable.setPlaceholder(new Label("Loading Lockbox files..."));
         metadataService.list(authService.getAccessToken())
                 .whenComplete((files, error) -> Platform.runLater(() -> {
-                    lockboxFileTable.setDisable(false);
-                    refreshLockboxBtn.setDisable(false);
                     if (error != null) {
+                        if (allowSessionRefresh && causedBy(
+                                error,
+                                LockboxMetadataService.UnauthorizedException.class
+                        )) {
+                            lockboxFileTable.setPlaceholder(new Label("Refreshing your session..."));
+                            authService.refresh().whenComplete((token, refreshError) ->
+                                    Platform.runLater(() -> {
+                                        if (refreshError != null) {
+                                            lockboxFileTable.setDisable(false);
+                                            refreshLockboxBtn.setDisable(false);
+                                            lockboxFileTable.getItems().clear();
+                                            lockboxFileTable.setPlaceholder(new Label(
+                                                    messageOf(refreshError,
+                                                            "Your session expired. Log in again.")));
+                                            return;
+                                        }
+                                        loadPrivateFileNames(false);
+                                    })
+                            );
+                            return;
+                        }
+                        lockboxFileTable.setDisable(false);
+                        refreshLockboxBtn.setDisable(false);
                         lockboxFileTable.getItems().clear();
                         lockboxFileTable.setPlaceholder(new Label(
                                 messageOf(error, "Could not load Lockbox filenames.")));
                         return;
                     }
+                    lockboxFileTable.setDisable(false);
+                    refreshLockboxBtn.setDisable(false);
                     lockboxFileTable.getItems().setAll(files);
                     lockboxFileTable.setPlaceholder(new Label("No Lockbox files."));
                 }));
+    }
+
+    private boolean causedBy(
+            Throwable error,
+            Class<? extends Throwable> type
+    ) {
+        Throwable current = error;
+        while (current != null) {
+            if (type.isInstance(current)) return true;
+            current = current.getCause();
+        }
+        return false;
     }
 
     @FXML
@@ -832,6 +926,135 @@ public final class CsePageController {
                     alert.setContentText(encryptionService.artifactDirectory().toString());
                     alert.showAndWait();
                 }));
+    }
+
+    private void uploadLocalArtifacts(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null || file.localContainerPath() == null || file.serverId() != null) return;
+        if (isUploadRunning()) {
+            showError("Another Lockbox upload is already running.");
+            return;
+        }
+        if (authService == null || !authService.isAuthenticated()) {
+            showError("Your session is not authenticated. Log in again.");
+            return;
+        }
+
+        final CseEncryptionService.V3Artifacts artifacts;
+        try {
+            artifacts = encryptionService.loadLocalArtifacts(
+                    file.clientFileId(),
+                    file.localContainerPath()
+            );
+        } catch (RuntimeException error) {
+            showError(messageOf(error, "The local Lockbox artifacts could not be loaded."));
+            return;
+        }
+
+        uploadCancelledByUser = false;
+        menu.setDisable(true);
+        showCancelButton();
+        cseProgressBar.setProgress(0);
+
+        CompletableFuture<LockboxUploadService.UploadResult> uploadFuture =
+                uploadService.upload(
+                        artifacts,
+                        null,
+                        authService.getAccessToken(),
+                        progress -> Platform.runLater(
+                                () -> cseProgressBar.setProgress(progress)
+                        )
+                );
+        activeUpload = uploadFuture;
+
+        uploadFuture.whenComplete((result, error) -> Platform.runLater(() -> {
+            menu.setDisable(false);
+            if (activeUpload != uploadFuture) return;
+            activeUpload = null;
+            hideCancelButton();
+
+            if (error != null) {
+                cseProgressBar.setProgress(0);
+                if (uploadCancelledByUser || uploadFuture.isCancelled()) {
+                    showUploadCancelled();
+                } else {
+                    showError(messageOf(error, "The encrypted file could not be uploaded."));
+                }
+                return;
+            }
+
+            cseProgressBar.setProgress(1);
+            loadPrivateFileNames();
+            showUploadSuccess(result);
+        }));
+    }
+
+    private void deleteLocalArtifacts(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null || file.localContainerPath() == null) return;
+        if (!confirmDeletion(
+                "Delete local copy?",
+                "Delete the local encrypted copy of " + file.filename() + "?",
+                "This removes its container, manifest, and signature from this device."
+        )) return;
+
+        menu.setDisable(true);
+        deletionService.deleteLocal(file)
+                .whenComplete((ignored, error) -> Platform.runLater(() -> {
+                    menu.setDisable(false);
+                    if (error != null) {
+                        showError(messageOf(error, "The local Lockbox file could not be deleted."));
+                        return;
+                    }
+                    loadPrivateFileNames();
+                }));
+    }
+
+    private void deleteWebArtifacts(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null || file.serverId() == null) return;
+        if (authService == null || !authService.isAuthenticated()) {
+            showError("Your session is not authenticated.");
+            return;
+        }
+        if (!confirmDeletion(
+                "Delete web copy?",
+                "Permanently delete the web copy of " + file.filename() + "?",
+                "The encrypted container, manifest, and signature will be removed from the server."
+        )) return;
+
+        menu.setDisable(true);
+        deletionService.deleteWeb(file.serverId(), authService.getAccessToken())
+                .whenComplete((ignored, error) -> Platform.runLater(() -> {
+                    menu.setDisable(false);
+                    if (error != null) {
+                        showError(messageOf(error, "The web Lockbox file could not be deleted."));
+                        return;
+                    }
+                    loadPrivateFileNames();
+                }));
+    }
+
+    private boolean confirmDeletion(
+            String title,
+            String header,
+            String content
+    ) {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle(title);
+        alert.setHeaderText(header);
+        alert.setContentText(content);
+        Window window = lockboxFileTable.getScene().getWindow();
+        if (window != null) alert.initOwner(window);
+        return alert.showAndWait()
+                .filter(button -> button == javafx.scene.control.ButtonType.OK)
+                .isPresent();
     }
 
     private void startProgressPolling() {
