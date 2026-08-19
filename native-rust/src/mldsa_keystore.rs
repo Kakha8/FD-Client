@@ -1,5 +1,4 @@
 use std::{
-    env,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -8,15 +7,15 @@ use std::{
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::{dpapi, mldsa};
+use crate::{account_context, dpapi, mldsa};
 
 const PRIVATE_KEY_FILE_NAME: &str = "ml-dsa-87-private.dpapi";
 const PUBLIC_KEY_FILE_NAME: &str = "ml-dsa-87-public.bin";
 
 #[derive(Debug, Error)]
 pub enum MlDsaKeystoreError {
-    #[error("LOCALAPPDATA is not available")]
-    MissingLocalAppData,
+    #[error("no active Lockbox account context")]
+    MissingAccountContext,
     #[error("filesystem operation failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("DPAPI operation failed: {0}")]
@@ -34,9 +33,8 @@ pub enum MlDsaKeystoreError {
 }
 
 fn key_paths() -> Result<(PathBuf, PathBuf), MlDsaKeystoreError> {
-    let local_app_data =
-        env::var_os("LOCALAPPDATA").ok_or(MlDsaKeystoreError::MissingLocalAppData)?;
-    let directory = PathBuf::from(local_app_data).join("CSE-ML-KEM");
+    let directory = account_context::key_directory()
+        .map_err(|_| MlDsaKeystoreError::MissingAccountContext)?;
     Ok((
         directory.join(PRIVATE_KEY_FILE_NAME),
         directory.join(PUBLIC_KEY_FILE_NAME),

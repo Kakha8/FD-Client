@@ -55,6 +55,8 @@ public final class AuthService {
      * Access tokens are intentionally kept only in memory.
      */
     private volatile String accessToken;
+    private volatile Long userId;
+    private volatile String username;
 
     public CompletableFuture<String> login(
             String username,
@@ -80,6 +82,9 @@ public final class AuthService {
          */
         cookieManager.getCookieStore().removeAll();
         accessToken = null;
+        userId = null;
+        this.username = null;
+        LockboxAccountContext.clear();
 
         final String requestBody;
 
@@ -119,9 +124,12 @@ public final class AuthService {
                 String newAccessToken =
                         json.path("accessToken").asText();
 
-                if (newAccessToken.isBlank()) {
+                long newUserId = json.path("userId").asLong(-1);
+                String newUsername = json.path("username").asText("");
+
+                if (newAccessToken.isBlank() || newUserId < 1 || newUsername.isBlank()) {
                     throw new AuthException(
-                            "The server did not return an access token."
+                            "The server did not return a complete account session."
                     );
                 }
 
@@ -133,6 +141,9 @@ public final class AuthService {
                  */
                 saveRefreshTokenFromCookieStore();
 
+                LockboxAccountContext.activate(newUserId);
+                userId = newUserId;
+                username = newUsername;
                 accessToken = newAccessToken;
                 return newAccessToken;
             } catch (AuthException exception) {
@@ -212,9 +223,12 @@ public final class AuthService {
                 String newAccessToken =
                         json.path("accessToken").asText();
 
-                if (newAccessToken.isBlank()) {
+                long refreshedUserId = json.path("userId").asLong(-1);
+                String refreshedUsername = json.path("username").asText("");
+
+                if (newAccessToken.isBlank() || refreshedUserId < 1 || refreshedUsername.isBlank()) {
                     throw new AuthException(
-                            "The server returned no access token."
+                            "The server returned an incomplete refreshed session."
                     );
                 }
 
@@ -226,6 +240,9 @@ public final class AuthService {
                  */
                 saveRefreshTokenFromCookieStore();
 
+                LockboxAccountContext.activate(refreshedUserId);
+                userId = refreshedUserId;
+                username = refreshedUsername;
                 accessToken = newAccessToken;
                 return newAccessToken;
             } catch (AuthException exception) {
@@ -311,6 +328,9 @@ public final class AuthService {
      */
     public void clearLocalSession() {
         accessToken = null;
+        userId = null;
+        username = null;
+        LockboxAccountContext.clear();
         cookieManager.getCookieStore().removeAll();
         refreshTokenStore.delete();
     }
@@ -323,6 +343,9 @@ public final class AuthService {
      */
     private void clearLocalSessionAfterAuthFailure() {
         accessToken = null;
+        userId = null;
+        username = null;
+        LockboxAccountContext.clear();
         cookieManager.getCookieStore().removeAll();
 
         try {
@@ -337,6 +360,16 @@ public final class AuthService {
 
     public String getAccessToken() {
         return accessToken;
+    }
+
+    public long getUserId() {
+        Long value = userId;
+        if (value == null) throw new IllegalStateException("No authenticated account ID is available.");
+        return value;
+    }
+
+    public String getUsername() {
+        return username;
     }
 
     public Optional<String> accessToken() {

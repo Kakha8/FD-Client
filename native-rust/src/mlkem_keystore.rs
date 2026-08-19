@@ -1,5 +1,4 @@
 use std::{
-    env,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -12,7 +11,7 @@ use ml_kem::{
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::dpapi;
+use crate::{account_context, dpapi};
 
 const ML_KEM_1024_SEED_LENGTH: usize = 64;
 
@@ -22,8 +21,8 @@ const PUBLIC_KEY_FILE_NAME: &str = "ml-kem-1024-public.bin";
 
 #[derive(Debug, Error)]
 pub enum MlKemKeystoreError {
-    #[error("LOCALAPPDATA is not available")]
-    MissingLocalAppData,
+    #[error("no active Lockbox account context")]
+    MissingAccountContext,
 
     #[error("filesystem operation failed: {0}")]
     Io(#[from] std::io::Error),
@@ -66,10 +65,8 @@ pub struct MlKemKeyPaths {
 }
 
 fn application_directory() -> Result<PathBuf, MlKemKeystoreError> {
-    let local_app_data =
-        env::var_os("LOCALAPPDATA").ok_or(MlKemKeystoreError::MissingLocalAppData)?;
-
-    Ok(PathBuf::from(local_app_data).join("CSE-ML-KEM"))
+    account_context::key_directory()
+        .map_err(|_| MlKemKeystoreError::MissingAccountContext)
 }
 
 pub fn default_ml_kem_key_paths() -> Result<MlKemKeyPaths, MlKemKeystoreError> {

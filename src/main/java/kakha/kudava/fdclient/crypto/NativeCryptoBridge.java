@@ -32,6 +32,10 @@ public final class NativeCryptoBridge {
     private NativeCryptoBridge() {
     }
 
+    public static native void setAccountId(long accountId);
+
+    public static native void clearAccountId();
+
     public static native boolean createStoredMlKem1024Keypair();
 
     public static native boolean verifyStoredMlKem1024Keypair();

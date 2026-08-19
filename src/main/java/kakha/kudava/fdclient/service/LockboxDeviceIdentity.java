@@ -47,10 +47,8 @@ public final class LockboxDeviceIdentity {
     }
 
     private static Path identityPath() {
-        String localAppData = System.getenv("LOCALAPPDATA");
-        if (localAppData == null || localAppData.isBlank()) {
-            throw new IllegalStateException("LOCALAPPDATA is unavailable.");
-        }
-        return Path.of(localAppData, "CSE-ML-KEM", FILE_NAME);
+        return LockboxAccountContext.accountDirectory()
+                .resolve("device")
+                .resolve(FILE_NAME);
     }
 }

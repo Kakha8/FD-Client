@@ -53,11 +53,9 @@ public final class CseEncryptionService {
     }
 
     public Path artifactDirectory() {
-        String localAppData = System.getenv("LOCALAPPDATA");
-        if (localAppData == null || localAppData.isBlank()) {
-            throw new CseEncryptionException("LOCALAPPDATA is unavailable.");
-        }
-        Path directory = Path.of(localAppData, "FileDrive", "Lockbox", "artifacts")
+        Path directory = LockboxAccountContext.accountDirectory()
+                .resolve("lockbox")
+                .resolve("artifacts")
                 .toAbsolutePath().normalize();
         try {
             Files.createDirectories(directory);

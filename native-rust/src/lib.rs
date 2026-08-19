@@ -1,4 +1,5 @@
 mod dek_envelope;
+mod account_context;
 mod csemlk03;
 mod content_crypto;
 mod dpapi;
@@ -29,6 +30,21 @@ use ml_kem::{
 
 use std::fmt::Write;
 use std::ptr::null_mut;
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "setAccountId")]
+pub fn set_account_id<'local>(mut env: EnvUnowned<'local>, _class: jclass, account_id: jlong) {
+    if account_id <= 0 || account_context::set(account_id as u64).is_err() {
+        let _ = env.with_env(|env| env.throw_new(
+            JNIString::from("java/lang/IllegalArgumentException"),
+            JNIString::from("Account ID must be positive"),
+        ));
+    }
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "clearAccountId")]
+pub fn clear_account_id<'local>(_env: EnvUnowned<'local>, _class: jclass) {
+    account_context::clear();
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
