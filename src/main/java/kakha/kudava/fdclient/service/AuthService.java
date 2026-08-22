@@ -15,6 +15,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
@@ -57,6 +58,7 @@ public final class AuthService {
     private volatile String accessToken;
     private volatile Long userId;
     private volatile String username;
+    private volatile UUID publicUuid;
 
     public CompletableFuture<String> login(
             String username,
@@ -84,6 +86,7 @@ public final class AuthService {
         accessToken = null;
         userId = null;
         this.username = null;
+        publicUuid = null;
         LockboxAccountContext.clear();
 
         final String requestBody;
@@ -122,10 +125,18 @@ public final class AuthService {
                         objectMapper.readTree(response.body());
 
                 String newAccessToken =
-                        json.path("accessToken").asText();
+                        json.path("accessToken").asText("");
 
-                long newUserId = json.path("userId").asLong(-1);
-                String newUsername = json.path("username").asText("");
+                long newUserId =
+                        json.path("userId").asLong(-1);
+
+                String newUsername =
+                        json.path("username").asText("");
+
+                UUID newPublicUuid =
+                        parsePublicUuid(
+                                json.path("publicUuid").asText("")
+                        );
 
                 if (newAccessToken.isBlank() || newUserId < 1 || newUsername.isBlank()) {
                     throw new AuthException(
@@ -144,6 +155,7 @@ public final class AuthService {
                 LockboxAccountContext.activate(newUserId);
                 userId = newUserId;
                 username = newUsername;
+                publicUuid = newPublicUuid;
                 accessToken = newAccessToken;
                 return newAccessToken;
             } catch (AuthException exception) {
@@ -221,10 +233,18 @@ public final class AuthService {
                         objectMapper.readTree(response.body());
 
                 String newAccessToken =
-                        json.path("accessToken").asText();
+                        json.path("accessToken").asText("");
 
-                long refreshedUserId = json.path("userId").asLong(-1);
-                String refreshedUsername = json.path("username").asText("");
+                long refreshedUserId =
+                        json.path("userId").asLong(-1);
+
+                String refreshedUsername =
+                        json.path("username").asText("");
+
+                UUID refreshedPublicUuid =
+                        parsePublicUuid(
+                                json.path("publicUuid").asText("")
+                        );
 
                 if (newAccessToken.isBlank() || refreshedUserId < 1 || refreshedUsername.isBlank()) {
                     throw new AuthException(
@@ -243,6 +263,7 @@ public final class AuthService {
                 LockboxAccountContext.activate(refreshedUserId);
                 userId = refreshedUserId;
                 username = refreshedUsername;
+                publicUuid = refreshedPublicUuid;
                 accessToken = newAccessToken;
                 return newAccessToken;
             } catch (AuthException exception) {
@@ -321,6 +342,24 @@ public final class AuthService {
         cookieManager.getCookieStore().add(AUTH_URI, cookie);
     }
 
+    static UUID parsePublicUuid(
+            String value
+    ) {
+        if (value == null || value.isBlank()) {
+            throw new AuthException(
+                    "The server did not return an account public UUID."
+            );
+        }
+
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException exception) {
+            throw new AuthException(
+                    "The server returned an invalid account public UUID."
+            );
+        }
+    }
+
     /**
      * Explicit local logout.
      *
@@ -330,6 +369,7 @@ public final class AuthService {
         accessToken = null;
         userId = null;
         username = null;
+        publicUuid = null;
         LockboxAccountContext.clear();
         cookieManager.getCookieStore().removeAll();
         refreshTokenStore.delete();
@@ -345,6 +385,7 @@ public final class AuthService {
         accessToken = null;
         userId = null;
         username = null;
+        publicUuid = null;
         LockboxAccountContext.clear();
         cookieManager.getCookieStore().removeAll();
 
@@ -372,13 +413,29 @@ public final class AuthService {
         return username;
     }
 
+    public UUID getPublicUuid() {
+        UUID value = publicUuid;
+
+        if (value == null) {
+            throw new IllegalStateException(
+                    "No authenticated account public UUID is available."
+            );
+        }
+
+        return value;
+    }
+
     public Optional<String> accessToken() {
         return Optional.ofNullable(accessToken);
     }
 
     public boolean isAuthenticated() {
         return accessToken != null
-                && !accessToken.isBlank();
+                && !accessToken.isBlank()
+                && userId != null
+                && username != null
+                && !username.isBlank()
+                && publicUuid != null;
     }
 
     public CookieManager getCookieManager() {

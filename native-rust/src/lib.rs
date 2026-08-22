@@ -13,6 +13,8 @@ mod metadata_crypto;
 mod metadata_view;
 mod mlkem_keystore;
 mod owner_envelope;
+mod share_envelope;
+mod share_artifacts;
 mod v3_artifacts;
 
 use jni::{
@@ -24,7 +26,7 @@ use jni::{
 use serde::Serialize;
 
 use ml_kem::{
-    MlKem1024,
+    EncapsulationKey1024, MlKem1024, TryKeyInit,
     kem::{Decapsulate, Encapsulate, Kem, KeyExport},
 };
 
@@ -510,6 +512,94 @@ pub fn sign_with_stored_ml_dsa87<'local>(
                 Ok(signature) => Ok(env.byte_array_from_slice(&signature)?.into_raw()),
                 Err(error) => {
                     eprintln!("Native Lockbox signing failed: {error}");
+                    Ok(null_mut())
+                }
+            }
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle(
+    "kakha.kudava.fdclient.crypto.NativeCryptoBridge",
+    "createRecipientShareEnvelopeV1"
+)]
+pub fn create_recipient_share_envelope_v1<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    container_path: JString<'local>,
+    manifest_path: JString<'local>,
+    signature_path: JString<'local>,
+    owner_public_uuid: JByteArray<'local>,
+    recipient_public_uuid: JByteArray<'local>,
+    recipient_ml_kem_public_key: JByteArray<'local>,
+    expires_at_unix_seconds: jlong,
+) -> jbyteArray {
+    unowned_env
+        .with_env(|env| -> Result<jbyteArray, jni::errors::Error> {
+            let result = (|| -> Result<Vec<u8>, String> {
+                if expires_at_unix_seconds < 0 {
+                    return Err("expiry must be zero or a positive Unix timestamp".into());
+                }
+
+                let container_path = container_path
+                    .try_to_string(env)
+                    .map_err(|error| error.to_string())?;
+                let manifest_path = manifest_path
+                    .try_to_string(env)
+                    .map_err(|error| error.to_string())?;
+                let signature_path = signature_path
+                    .try_to_string(env)
+                    .map_err(|error| error.to_string())?;
+                let owner_public_uuid: [u8; 16] = env
+                    .convert_byte_array(&owner_public_uuid)
+                    .map_err(|error| error.to_string())?
+                    .try_into()
+                    .map_err(|_| "owner public UUID must contain exactly 16 bytes")?;
+                let recipient_public_uuid: [u8; 16] = env
+                    .convert_byte_array(&recipient_public_uuid)
+                    .map_err(|error| error.to_string())?
+                    .try_into()
+                    .map_err(|_| "recipient public UUID must contain exactly 16 bytes")?;
+                let recipient_public_key_bytes = env
+                    .convert_byte_array(&recipient_ml_kem_public_key)
+                    .map_err(|error| error.to_string())?;
+                let recipient_public_key = EncapsulationKey1024::new_from_slice(
+                    &recipient_public_key_bytes,
+                )
+                .map_err(|_| "recipient ML-KEM-1024 public key is invalid")?;
+                let owner_encryption_private =
+                    mlkem_keystore::load_stored_ml_kem1024_decapsulation_key()
+                        .map_err(|error| error.to_string())?;
+                let owner_signing_public = mldsa_keystore::public_key()
+                    .map_err(|error| error.to_string())?;
+
+                share_artifacts::create_recipient_envelope_package(
+                    &share_artifacts::CreateRecipientEnvelopeRequest {
+                        container_path: std::path::Path::new(&container_path),
+                        manifest_path: std::path::Path::new(&manifest_path),
+                        signature_path: std::path::Path::new(&signature_path),
+                        owner_account_id: owner_public_uuid,
+                        recipient_account_id: recipient_public_uuid,
+                        recipient_public_key: &recipient_public_key,
+                        expires_at_unix_seconds: expires_at_unix_seconds as u64,
+                    },
+                    &share_artifacts::OwnerShareKeys {
+                        encryption_private_key: &owner_encryption_private,
+                        signing_public_key: &owner_signing_public,
+                    },
+                )
+                .map_err(|error| error.to_string())
+            })();
+
+            match result {
+                Ok(package) => Ok(env.byte_array_from_slice(&package)?.into_raw()),
+                Err(error) => {
+                    env.throw_new(
+                        JNIString::from("java/lang/IllegalStateException"),
+                        JNIString::from(format!(
+                            "Could not create recipient share envelope: {error}"
+                        )),
+                    )?;
                     Ok(null_mut())
                 }
             }

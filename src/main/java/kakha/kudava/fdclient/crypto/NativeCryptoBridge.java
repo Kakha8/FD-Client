@@ -48,6 +48,16 @@ public final class NativeCryptoBridge {
 
     public static native byte[] signWithStoredMlDsa87(byte[] message);
 
+    public static native byte[] createRecipientShareEnvelopeV1(
+            String containerPath,
+            String manifestPath,
+            String signaturePath,
+            byte[] ownerPublicUuid,
+            byte[] recipientPublicUuid,
+            byte[] recipientMlKemPublicKey,
+            long expiresAtUnixSeconds
+    );
+
     public static native boolean encryptSelectedFile(String inputPath);
 
     public static native String encryptFileV3(

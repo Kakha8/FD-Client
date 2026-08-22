@@ -263,6 +263,7 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), MlKemKeystoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     fn test_paths(test_name: &str) -> (PathBuf, PathBuf) {
         let process_id = std::process::id();
