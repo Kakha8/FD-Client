@@ -46,6 +46,8 @@ public final class NativeCryptoBridge {
 
     public static native byte[] getStoredMlDsa87PublicKey();
 
+    public static native byte[] getStoredMlDsa87KeyId();
+
     public static native byte[] signWithStoredMlDsa87(byte[] message);
 
     public static native byte[] createRecipientShareEnvelopeV1(

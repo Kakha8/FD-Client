@@ -20,6 +20,7 @@ import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextInputDialog;
 import javafx.scene.layout.AnchorPane;
 import javafx.stage.FileChooser;
 import javafx.stage.DirectoryChooser;
@@ -33,6 +34,7 @@ import kakha.kudava.fdclient.service.LockboxDeviceIdentity;
 import kakha.kudava.fdclient.service.LockboxMetadataService;
 import kakha.kudava.fdclient.service.LockboxDownloadService;
 import kakha.kudava.fdclient.service.LockboxDeletionService;
+import kakha.kudava.fdclient.service.LockboxShareService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -170,6 +172,7 @@ public final class CsePageController {
             private final MenuItem download = new MenuItem("Download");
             private final MenuItem deleteLocal = new MenuItem("Delete locally");
             private final MenuItem deleteWeb = new MenuItem("Delete from web");
+            private final MenuItem share = new MenuItem("Share…");
             {
                 menu.setStyle("-fx-font-size: 17px; -fx-padding: 0 6 0 6;");
                 export.setOnAction(event -> exportLocalArtifacts(getTableRow().getItem()));
@@ -177,6 +180,7 @@ public final class CsePageController {
                 download.setOnAction(event -> downloadWebArtifacts(getTableRow().getItem(), menu));
                 deleteLocal.setOnAction(event -> deleteLocalArtifacts(getTableRow().getItem(), menu));
                 deleteWeb.setOnAction(event -> deleteWebArtifacts(getTableRow().getItem(), menu));
+                share.setOnAction(event -> shareFile(getTableRow().getItem(), menu));
             }
 
             @Override
@@ -197,6 +201,9 @@ public final class CsePageController {
                 }
                 if (file != null && file.serverId() != null) {
                     menu.getItems().add(deleteWeb);
+                }
+                if (file != null && file.serverId() != null && file.localContainerPath() != null) {
+                    menu.getItems().add(0, share);
                 }
                 setGraphic(file != null && !menu.getItems().isEmpty() ? menu : null);
                 setText(null);
@@ -1038,6 +1045,44 @@ public final class CsePageController {
                         return;
                     }
                     loadPrivateFileNames();
+                }));
+    }
+
+    private void shareFile(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null || file.serverId() == null || file.localContainerPath() == null) return;
+        if (authService == null || !authService.isAuthenticated()) {
+            showError("Your session is not authenticated. Log in again.");
+            return;
+        }
+
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.setTitle("Share Lockbox file");
+        dialog.setHeaderText("Share " + file.filename());
+        dialog.setContentText("Recipient username:");
+        Window owner = lockboxFileTable.getScene().getWindow();
+        if (owner != null) dialog.initOwner(owner);
+        String username = dialog.showAndWait().map(String::trim).orElse("");
+        if (username.isEmpty()) return;
+
+        menu.setDisable(true);
+        cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        new LockboxShareService(authService).share(file, username, 0)
+                .whenComplete((result, error) -> Platform.runLater(() -> {
+                    menu.setDisable(false);
+                    cseProgressBar.setProgress(error == null ? 1 : 0);
+                    if (error != null) {
+                        showError(messageOf(error, "The Lockbox file could not be shared."));
+                        return;
+                    }
+                    Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                    alert.setTitle("Share created");
+                    alert.setHeaderText("The Lockbox file was shared successfully.");
+                    alert.setContentText("Recipient: " + result.recipientUsername());
+                    if (owner != null) alert.initOwner(owner);
+                    alert.showAndWait();
                 }));
     }
 

@@ -499,6 +499,17 @@ pub fn get_stored_ml_dsa87_public_key<'local>(
     native_bytes(env, || mldsa_keystore::public_key().map_err(|e| e.to_string()))
 }
 
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "getStoredMlDsa87KeyId")]
+pub fn get_stored_ml_dsa87_key_id<'local>(
+    env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jbyteArray {
+    native_bytes(env, || {
+        let public_key = mldsa_keystore::public_key().map_err(|error| error.to_string())?;
+        Ok(key_id::from_public_key(&public_key).to_vec())
+    })
+}
+
 #[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "signWithStoredMlDsa87")]
 pub fn sign_with_stored_ml_dsa87<'local>(
     mut unowned_env: EnvUnowned<'local>,
