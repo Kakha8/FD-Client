@@ -34,10 +34,19 @@ public final class LockboxMetadataService {
     private static final int MAX_HEADER = 1024 * 1024;
 
     private final ObjectMapper json = new ObjectMapper();
+    private final LockboxReceivedShareService receivedShares =
+            new LockboxReceivedShareService();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15)).build();
 
     public CompletableFuture<List<PrivateFile>> list(String accessToken) {
+        return list(accessToken, null);
+    }
+
+    public CompletableFuture<List<PrivateFile>> list(
+            String accessToken,
+            UUID recipientPublicUuid
+    ) {
         if (accessToken == null || accessToken.isBlank()) {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("No authenticated session is available."));
@@ -47,14 +56,24 @@ public final class LockboxMetadataService {
                 .header("Authorization", "Bearer " + accessToken)
                 .header("Accept", "application/json")
                 .GET().build();
-        return http.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+        CompletableFuture<List<PrivateFile>> owned =
+                http.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
                 .handle((response, error) -> {
-                    List<PrivateFile> local = localFiles();
                     if (error != null) {
-                        if (!local.isEmpty()) return local;
                         throw new CompletionException(error);
                     }
-                    return merge(local, parseResponse(response));
+                    return parseResponse(response);
+                });
+        if (recipientPublicUuid == null) {
+            return owned.thenApply(web -> merge(localFiles(null), web));
+        }
+        return owned.thenCombine(
+                receivedShares.list(accessToken, recipientPublicUuid),
+                (ownedFiles, sharedFiles) -> {
+                    List<PrivateFile> web = new ArrayList<>(ownedFiles.size() + sharedFiles.size());
+                    web.addAll(ownedFiles);
+                    web.addAll(sharedFiles);
+                    return merge(localFiles(recipientPublicUuid), web);
                 });
     }
 
@@ -101,11 +120,11 @@ public final class LockboxMetadataService {
                 metadata.path("exactPlaintextSize").asLong(-1),
                 Instant.ofEpochMilli(metadata.path("createdAtUnixMillis").asLong()),
                 Instant.ofEpochMilli(metadata.path("modifiedAtUnixMillis").asLong()),
-                Location.WEB, null
+                Location.WEB, null, AccessKind.OWNED, null, null, null
         );
     }
 
-    private List<PrivateFile> localFiles() {
+    private List<PrivateFile> localFiles(UUID recipientPublicUuid) {
         Path directory = new CseEncryptionService().artifactDirectory();
         List<PrivateFile> result = new ArrayList<>();
         try (var files = Files.list(directory)) {
@@ -116,6 +135,7 @@ public final class LockboxMetadataService {
                             UUID id = UUID.fromString(name.substring(0, name.length() - ".fdmanifest".length()));
                             Path signature = directory.resolve(id + ".fdsig");
                             Path container = directory.resolve(id + ".fdcse");
+                            if (Files.isRegularFile(directory.resolve(id + ".fdshare"))) return;
                             if (!Files.isRegularFile(signature) || !Files.isRegularFile(container)) return;
                             byte[] manifestBytes = boundedRead(manifest, MAX_MANIFEST);
                             byte[] signatureBytes = boundedRead(signature, MAX_SIGNATURE);
@@ -130,7 +150,8 @@ public final class LockboxMetadataService {
                                     metadata.path("exactPlaintextSize").asLong(-1),
                                     Instant.ofEpochMilli(metadata.path("createdAtUnixMillis").asLong()),
                                     Instant.ofEpochMilli(metadata.path("modifiedAtUnixMillis").asLong()),
-                                    Location.LOCAL, container));
+                                    Location.LOCAL, container,
+                                    AccessKind.OWNED, null, null, null));
                         } catch (Exception error) {
                             System.err.println("Ignoring invalid local Lockbox artifact set: " + error.getMessage());
                         }
@@ -138,26 +159,102 @@ public final class LockboxMetadataService {
         } catch (Exception error) {
             throw new IllegalStateException("Could not scan local Lockbox artifacts.", error);
         }
+        if (recipientPublicUuid != null) {
+            result.addAll(localReceivedShares(directory, recipientPublicUuid));
+        }
         return result;
     }
 
+    private List<PrivateFile> localReceivedShares(Path directory, UUID recipientPublicUuid) {
+        List<PrivateFile> result = new ArrayList<>();
+        try (var files = Files.list(directory)) {
+            files.filter(path -> path.getFileName().toString().endsWith(".fdshare"))
+                    .forEach(sidecar -> {
+                        try {
+                            JsonNode stored = json.readTree(Files.readString(sidecar));
+                            if (stored.path("version").asInt(-1) != 1) {
+                                throw new IllegalStateException("Unsupported share sidecar version.");
+                            }
+                            UUID shareId = UUID.fromString(requiredText(stored, "shareId"));
+                            UUID clientFileId = UUID.fromString(requiredText(stored, "clientFileId"));
+                            UUID storedRecipient = UUID.fromString(requiredText(stored, "recipientPublicUuid"));
+                            long revision = stored.path("revision").asLong(-1);
+                            if (!recipientPublicUuid.equals(storedRecipient) || revision < 1) {
+                                throw new IllegalStateException("Share sidecar belongs to another account.");
+                            }
+                            Path container = directory.resolve(clientFileId + ".fdcse");
+                            Path manifest = directory.resolve(clientFileId + ".fdmanifest");
+                            Path signature = directory.resolve(clientFileId + ".fdsig");
+                            if (!Files.isRegularFile(container) || !Files.isRegularFile(manifest)
+                                    || !Files.isRegularFile(signature)) {
+                                throw new IllegalStateException("Local shared artifact set is incomplete.");
+                            }
+                            var artifacts = new LockboxReceivedShareService.ReceivedShareArtifacts(
+                                    sidecarBytes(stored, "recipientEnvelope", 1_858),
+                                    sidecarBytes(stored, "ownerShareSignature", 4_627),
+                                    sidecarBytes(stored, "ownerSigningKeyId", 32),
+                                    sidecarBytes(stored, "ownerSigningPublicKey", 2_592),
+                                    boundedRead(manifest, MAX_MANIFEST),
+                                    boundedRead(signature, MAX_SIGNATURE),
+                                    readHeader(container), storedRecipient);
+                            JsonNode metadata = json.readTree(
+                                    NativeCryptoBridge.decryptReceivedShareMetadataV1(
+                                            artifacts.recipientEnvelope(), artifacts.ownerShareSignature(),
+                                            artifacts.ownerSigningKeyId(), artifacts.ownerSigningPublicKey(),
+                                            artifacts.manifest(), artifacts.fileSignature(),
+                                            artifacts.encryptedHeader(),
+                                            LockboxReceivedShareService.uuidBytes(shareId),
+                                            LockboxReceivedShareService.uuidBytes(storedRecipient),
+                                            LockboxReceivedShareService.uuidBytes(clientFileId), revision));
+                            result.add(new PrivateFile(
+                                    null, clientFileId, revision,
+                                    requiredText(metadata, "filename"), requiredText(metadata, "mimeType"),
+                                    metadata.path("exactPlaintextSize").asLong(-1),
+                                    Instant.ofEpochMilli(metadata.path("createdAtUnixMillis").asLong()),
+                                    Instant.ofEpochMilli(metadata.path("modifiedAtUnixMillis").asLong()),
+                                    Location.LOCAL, container, AccessKind.SHARED_WITH_ME,
+                                    shareId, requiredText(stored, "ownerUsername"), artifacts));
+                        } catch (Exception error) {
+                            System.err.println("Ignoring invalid local Lockbox share: " + error.getMessage());
+                        }
+                    });
+        } catch (Exception error) {
+            throw new IllegalStateException("Could not scan local received shares.", error);
+        }
+        return result;
+    }
+
+    private byte[] sidecarBytes(JsonNode node, String field, int exactLength) {
+        byte[] value = Base64.getDecoder().decode(requiredText(node, field));
+        if (value.length != exactLength) throw new IllegalStateException("Invalid sidecar field: " + field);
+        return value;
+    }
+
     private List<PrivateFile> merge(List<PrivateFile> local, List<PrivateFile> web) {
-        Map<UUID, PrivateFile> merged = new LinkedHashMap<>();
-        for (PrivateFile file : local) merged.put(file.clientFileId(), file);
+        Map<String, PrivateFile> merged = new LinkedHashMap<>();
+        for (PrivateFile file : local) merged.put(mergeKey(file), file);
         for (PrivateFile remote : web) {
-            PrivateFile localFile = merged.get(remote.clientFileId());
+            String key = mergeKey(remote);
+            PrivateFile localFile = merged.get(key);
             if (localFile == null) {
-                merged.put(remote.clientFileId(), remote);
+                merged.put(key, remote);
             } else {
-                merged.put(remote.clientFileId(), new PrivateFile(
+                merged.put(key, new PrivateFile(
                         remote.serverId(), remote.clientFileId(), remote.revision(),
                         remote.filename(), remote.mimeType(), remote.plaintextSize(),
                         remote.createdAt(), remote.modifiedAt(), Location.BOTH,
-                        localFile.localContainerPath()));
+                        localFile.localContainerPath(), remote.accessKind(),
+                        remote.shareId(), remote.ownerUsername(), remote.shareArtifacts()));
             }
         }
         return merged.values().stream()
                 .sorted((a, b) -> b.modifiedAt().compareTo(a.modifiedAt())).toList();
+    }
+
+    private String mergeKey(PrivateFile file) {
+        return file.accessKind() == AccessKind.SHARED_WITH_ME
+                ? "shared:" + file.shareId()
+                : "owned:" + file.clientFileId();
     }
 
     private byte[] boundedRead(Path path, int maximum) throws Exception {
@@ -200,7 +297,26 @@ public final class LockboxMetadataService {
     public record PrivateFile(Long serverId, UUID clientFileId, long revision, String filename,
                               String mimeType, long plaintextSize,
                               Instant createdAt, Instant modifiedAt,
-                              Location location, Path localContainerPath) {}
+                              Location location, Path localContainerPath,
+                              AccessKind accessKind, UUID shareId, String ownerUsername,
+                              LockboxReceivedShareService.ReceivedShareArtifacts shareArtifacts) {
+        public String locationDisplayName() {
+            if (accessKind == AccessKind.SHARED_WITH_ME) {
+                return location.displayName() + " · Shared by " + ownerUsername;
+            }
+            return location.displayName();
+        }
+
+        public PrivateFile withLocalContainerPath(Path path) {
+            return new PrivateFile(
+                    serverId, clientFileId, revision, filename, mimeType, plaintextSize,
+                    createdAt, modifiedAt, Location.BOTH, path, accessKind,
+                    shareId, ownerUsername, shareArtifacts
+            );
+        }
+    }
+
+    public enum AccessKind { OWNED, SHARED_WITH_ME }
 
     public enum Location {
         LOCAL("Local"), WEB("Web"), BOTH("Local + Web");

@@ -83,11 +83,14 @@ public final class LockboxDeletionService {
         }
 
         String base = file.clientFileId().toString();
-        List<Path> artifacts = List.of(
+        List<Path> artifacts = new java.util.ArrayList<>(List.of(
                 directory.resolve(base + ".fdcse"),
                 directory.resolve(base + ".fdmanifest"),
                 directory.resolve(base + ".fdsig")
-        );
+        ));
+        if (file.accessKind() == LockboxMetadataService.AccessKind.SHARED_WITH_ME) {
+            artifacts.add(directory.resolve(base + ".fdshare"));
+        }
 
         try {
             for (Path artifact : artifacts) {

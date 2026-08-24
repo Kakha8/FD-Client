@@ -35,6 +35,7 @@ import kakha.kudava.fdclient.service.LockboxMetadataService;
 import kakha.kudava.fdclient.service.LockboxDownloadService;
 import kakha.kudava.fdclient.service.LockboxDeletionService;
 import kakha.kudava.fdclient.service.LockboxShareService;
+import kakha.kudava.fdclient.service.LockboxDecryptExportService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -110,6 +111,9 @@ public final class CsePageController {
     private final LockboxDeletionService deletionService =
             new LockboxDeletionService();
 
+    private final LockboxDecryptExportService decryptExportService =
+            new LockboxDecryptExportService();
+
     private AuthService authService;
     private Path selectedFile;
     private CseEncryptionService.V3Artifacts encryptedArtifacts;
@@ -164,10 +168,11 @@ public final class CsePageController {
             }
         });
         locationColumn.setCellValueFactory(row ->
-                new ReadOnlyStringWrapper(row.getValue().location().displayName()));
+                new ReadOnlyStringWrapper(row.getValue().locationDisplayName()));
         actionsColumn.setCellFactory(column -> new TableCell<>() {
             private final MenuButton menu = new MenuButton("⋮");
             private final MenuItem export = new MenuItem("Export");
+            private final MenuItem decryptExport = new MenuItem("Decrypt and export…");
             private final MenuItem upload = new MenuItem("Upload");
             private final MenuItem download = new MenuItem("Download");
             private final MenuItem deleteLocal = new MenuItem("Delete locally");
@@ -176,6 +181,7 @@ public final class CsePageController {
             {
                 menu.setStyle("-fx-font-size: 17px; -fx-padding: 0 6 0 6;");
                 export.setOnAction(event -> exportLocalArtifacts(getTableRow().getItem()));
+                decryptExport.setOnAction(event -> decryptAndExport(getTableRow().getItem(), menu));
                 upload.setOnAction(event -> uploadLocalArtifacts(getTableRow().getItem(), menu));
                 download.setOnAction(event -> downloadWebArtifacts(getTableRow().getItem(), menu));
                 deleteLocal.setOnAction(event -> deleteLocalArtifacts(getTableRow().getItem(), menu));
@@ -189,8 +195,14 @@ public final class CsePageController {
                 LockboxMetadataService.PrivateFile file =
                         empty || getTableRow() == null ? null : getTableRow().getItem();
                 menu.getItems().clear();
-                if (file != null && file.localContainerPath() != null) menu.getItems().add(export);
-                if (file != null && file.localContainerPath() != null && file.serverId() == null) {
+                if (file != null) {
+                    menu.getItems().add(decryptExport);
+                }
+                if (file != null && file.localContainerPath() != null) {
+                    menu.getItems().add(export);
+                }
+                if (file != null && file.accessKind() == LockboxMetadataService.AccessKind.OWNED
+                        && file.localContainerPath() != null && file.serverId() == null) {
                     menu.getItems().add(upload);
                 }
                 if (file != null && file.serverId() != null && file.localContainerPath() == null) {
@@ -199,10 +211,12 @@ public final class CsePageController {
                 if (file != null && file.localContainerPath() != null) {
                     menu.getItems().add(deleteLocal);
                 }
-                if (file != null && file.serverId() != null) {
+                if (file != null && file.accessKind() == LockboxMetadataService.AccessKind.OWNED
+                        && file.serverId() != null) {
                     menu.getItems().add(deleteWeb);
                 }
-                if (file != null && file.serverId() != null && file.localContainerPath() != null) {
+                if (file != null && file.accessKind() == LockboxMetadataService.AccessKind.OWNED
+                        && file.serverId() != null && file.localContainerPath() != null) {
                     menu.getItems().add(0, share);
                 }
                 setGraphic(file != null && !menu.getItems().isEmpty() ? menu : null);
@@ -778,7 +792,7 @@ public final class CsePageController {
         refreshLockboxBtn.setDisable(true);
         lockboxFileTable.setDisable(true);
         lockboxFileTable.setPlaceholder(new Label("Loading Lockbox files..."));
-        metadataService.list(authService.getAccessToken())
+        metadataService.list(authService.getAccessToken(), authService.getPublicUuid())
                 .whenComplete((files, error) -> Platform.runLater(() -> {
                     if (error != null) {
                         if (allowSessionRefresh && causedBy(
@@ -858,11 +872,14 @@ public final class CsePageController {
         Path sourceContainer = file.localContainerPath().toAbsolutePath().normalize();
         Path sourceDirectory = sourceContainer.getParent();
         String base = file.clientFileId().toString();
-        List<Path> sources = List.of(
+        List<Path> sources = new ArrayList<>(List.of(
                 sourceDirectory.resolve(base + ".fdcse"),
                 sourceDirectory.resolve(base + ".fdmanifest"),
                 sourceDirectory.resolve(base + ".fdsig")
-        );
+        ));
+        if (file.accessKind() == LockboxMetadataService.AccessKind.SHARED_WITH_ME) {
+            sources.add(sourceDirectory.resolve(base + ".fdshare"));
+        }
         List<Path> targets = sources.stream()
                 .map(source -> destination.resolve(source.getFileName()))
                 .toList();
@@ -906,9 +923,99 @@ public final class CsePageController {
         }
     }
 
+    private void decryptAndExport(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null) return;
+        if (file.localContainerPath() == null
+                && (file.serverId() == null || authService == null || !authService.isAuthenticated())) {
+            showError("Download the encrypted Lockbox file before decrypting it.");
+            return;
+        }
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Decrypt and export Lockbox file");
+        chooser.setInitialFileName(file.filename());
+        File selected = chooser.showSaveDialog(lockboxFileTable.getScene().getWindow());
+        if (selected == null) return;
+
+        Path destination = selected.toPath().toAbsolutePath().normalize();
+        if (Files.exists(destination)) {
+            showError("The selected destination already exists. Choose a new filename.");
+            return;
+        }
+
+        menu.setDisable(true);
+        cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        decryptAndExport(file, destination, menu, true);
+    }
+
+    private void decryptAndExport(
+            LockboxMetadataService.PrivateFile file,
+            Path destination,
+            MenuButton menu,
+            boolean allowSessionRefresh
+    ) {
+        CompletableFuture<Void> operation;
+        if (file.localContainerPath() != null) {
+            operation = decryptExportService.decryptAndExport(file, destination);
+        } else {
+            operation = downloadService.download(file, authService.getAccessToken())
+                    .thenCompose(ignored -> {
+                        Path localContainer = encryptionService.artifactDirectory()
+                                .resolve(file.clientFileId() + ".fdcse");
+                        return decryptExportService.decryptAndExport(
+                                file.withLocalContainerPath(localContainer), destination);
+                    });
+        }
+        operation
+                .whenComplete((ignored, error) -> Platform.runLater(() -> {
+                    if (error != null) {
+                        if (allowSessionRefresh && causedBy(
+                                error, LockboxDownloadService.UnauthorizedException.class)) {
+                            authService.refresh().whenComplete((token, refreshError) ->
+                                    Platform.runLater(() -> {
+                                        if (refreshError != null) {
+                                            menu.setDisable(false);
+                                            cseProgressBar.setProgress(0);
+                                            showError(messageOf(refreshError,
+                                                    "Your session expired. Log in again."));
+                                            return;
+                                        }
+                                        decryptAndExport(file, destination, menu, false);
+                                    }));
+                            return;
+                        }
+                        menu.setDisable(false);
+                        cseProgressBar.setProgress(0);
+                        showError(messageOf(error, "The Lockbox file could not be decrypted."));
+                        return;
+                    }
+                    menu.setDisable(false);
+                    cseProgressBar.setProgress(1);
+                    loadPrivateFileNames();
+                    Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                    alert.setTitle("Export complete");
+                    alert.setHeaderText("The decrypted file was exported successfully.");
+                    alert.setContentText(destination.toString());
+                    Window owner = lockboxFileTable.getScene().getWindow();
+                    if (owner != null) alert.initOwner(owner);
+                    alert.showAndWait();
+                }));
+    }
+
     private void downloadWebArtifacts(
             LockboxMetadataService.PrivateFile file,
             MenuButton menu
+    ) {
+        downloadWebArtifacts(file, menu, true);
+    }
+
+    private void downloadWebArtifacts(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu,
+            boolean allowSessionRefresh
     ) {
         if (file == null || file.serverId() == null) return;
         if (authService == null || !authService.isAuthenticated()) {
@@ -920,12 +1027,35 @@ public final class CsePageController {
         cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
         downloadService.download(file, authService.getAccessToken())
                 .whenComplete((ignored, error) -> Platform.runLater(() -> {
-                    menu.setDisable(false);
-                    cseProgressBar.setProgress(error == null ? 1 : 0);
                     if (error != null) {
+                        if (allowSessionRefresh && causedBy(
+                                error,
+                                LockboxDownloadService.UnauthorizedException.class
+                        )) {
+                            cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+                            authService.refresh().whenComplete((token, refreshError) ->
+                                    Platform.runLater(() -> {
+                                        if (refreshError != null) {
+                                            menu.setDisable(false);
+                                            cseProgressBar.setProgress(0);
+                                            showError(messageOf(
+                                                    refreshError,
+                                                    "Your session expired. Log in again."
+                                            ));
+                                            return;
+                                        }
+                                        downloadWebArtifacts(file, menu, false);
+                                    })
+                            );
+                            return;
+                        }
+                        menu.setDisable(false);
+                        cseProgressBar.setProgress(0);
                         showError(messageOf(error, "The Lockbox file could not be downloaded."));
                         return;
                     }
+                    menu.setDisable(false);
+                    cseProgressBar.setProgress(1);
                     loadPrivateFileNames();
                     Alert alert = new Alert(Alert.AlertType.INFORMATION);
                     alert.setTitle("Download complete");

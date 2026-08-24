@@ -78,6 +78,43 @@ public final class NativeCryptoBridge {
             byte[] encryptedHeader
     );
 
+    public static native String decryptReceivedShareMetadataV1(
+            byte[] recipientEnvelope,
+            byte[] ownerShareSignature,
+            byte[] ownerSigningKeyId,
+            byte[] ownerSigningPublicKey,
+            byte[] manifest,
+            byte[] fileSignature,
+            byte[] encryptedHeader,
+            byte[] expectedShareUuid,
+            byte[] expectedRecipientPublicUuid,
+            byte[] expectedClientFileUuid,
+            long expectedRevision
+    );
+
+    public static native boolean decryptOwnedFileV3(
+            String containerPath,
+            byte[] manifest,
+            byte[] signature,
+            String outputPath
+    );
+
+    public static native boolean decryptReceivedShareFileV1(
+            String containerPath,
+            String outputPath,
+            byte[] recipientEnvelope,
+            byte[] ownerShareSignature,
+            byte[] ownerSigningKeyId,
+            byte[] ownerSigningPublicKey,
+            byte[] manifest,
+            byte[] fileSignature,
+            byte[] encryptedHeader,
+            byte[] expectedShareUuid,
+            byte[] expectedRecipientPublicUuid,
+            byte[] expectedClientFileUuid,
+            long expectedRevision
+    );
+
     public static native boolean decryptSelectedFile(String inputPath);
 
     public static native boolean decryptSelectedFileTo(

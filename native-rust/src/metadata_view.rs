@@ -1,6 +1,7 @@
 use ml_kem::DecapsulationKey1024;
 use serde::Serialize;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use crate::{
     csemlk03::{self, Header, Manifest, SignatureRecord, FIXED_HEADER_LENGTH, SUITE_ID},
@@ -18,6 +19,12 @@ pub struct PrivateMetadataView {
     pub created_at_unix_millis: i64,
     pub modified_at_unix_millis: i64,
     pub revision: u64,
+}
+
+pub struct OpenedPrivateMetadata {
+    pub view: PrivateMetadataView,
+    pub master_key: Zeroizing<[u8; crate::kdf::FILE_MASTER_KEY_LENGTH]>,
+    pub header: Header,
 }
 
 #[derive(Debug, Error)]
@@ -41,6 +48,22 @@ pub fn decrypt_private_metadata(
     signing_public_key: &[u8],
     encryption_private_key: &DecapsulationKey1024,
 ) -> Result<PrivateMetadataView, PrivateMetadataError> {
+    Ok(open_private_metadata(
+        manifest_bytes,
+        signature_bytes,
+        header_bytes,
+        signing_public_key,
+        encryption_private_key,
+    )?.view)
+}
+
+pub fn open_private_metadata(
+    manifest_bytes: &[u8],
+    signature_bytes: &[u8],
+    header_bytes: &[u8],
+    signing_public_key: &[u8],
+    encryption_private_key: &DecapsulationKey1024,
+) -> Result<OpenedPrivateMetadata, PrivateMetadataError> {
     let manifest = Manifest::parse(manifest_bytes)?;
     let signature = SignatureRecord::parse(signature_bytes)?;
     let signing_key_id = crate::key_id::from_public_key(signing_public_key);
@@ -95,13 +118,17 @@ pub fn decrypt_private_metadata(
     {
         return Err(PrivateMetadataError::Mismatch);
     }
-    Ok(PrivateMetadataView {
-        client_file_id: crate::v3_artifacts::format_uuid_public(&metadata.client_file_id),
-        filename: metadata.filename,
-        mime_type: metadata.mime_type,
-        exact_plaintext_size: metadata.exact_plaintext_size,
-        created_at_unix_millis: metadata.created_at_unix_millis,
-        modified_at_unix_millis: metadata.modified_at_unix_millis,
-        revision: metadata.revision,
+    Ok(OpenedPrivateMetadata {
+        view: PrivateMetadataView {
+            client_file_id: crate::v3_artifacts::format_uuid_public(&metadata.client_file_id),
+            filename: metadata.filename,
+            mime_type: metadata.mime_type,
+            exact_plaintext_size: metadata.exact_plaintext_size,
+            created_at_unix_millis: metadata.created_at_unix_millis,
+            modified_at_unix_millis: metadata.modified_at_unix_millis,
+            revision: metadata.revision,
+        },
+        master_key,
+        header,
     })
 }
