@@ -109,7 +109,6 @@ impl ShareEnvelopeContext {
             || self.container_hash == [0; 64]
             || self.owner_account_id == [0; 16]
             || self.recipient_account_id == [0; 16]
-            || self.owner_account_id == self.recipient_account_id
             || self.recipient_encryption_key_id == [0; 32]
             || self.permission != PERMISSION_READ
         {
@@ -485,10 +484,17 @@ mod tests {
     }
 
     #[test]
+    fn accepts_same_account_for_device_targeted_self_share() {
+        let mut self_share = context([6; 32]);
+        self_share.recipient_account_id = self_share.owner_account_id;
+        assert!(self_share.encode().is_ok());
+    }
+
+    #[test]
     fn rejects_invalid_context_and_key_binding() {
         let (_, public_key) = MlKem1024::generate_keypair();
         let mut invalid = context([6; 32]);
-        invalid.owner_account_id = invalid.recipient_account_id;
+        invalid.recipient_account_id = [0; 16];
         assert_eq!(invalid.encode(), Err(ShareEnvelopeError::InvalidContext));
 
         let mismatched = context([7; 32]);
