@@ -12,9 +12,8 @@ import java.util.concurrent.CompletableFuture;
 
 public final class LockboxDeletionService {
 
-    private static final URI FILES_URI = URI.create(
-            "https://localhost:8443/api/lockbox/files/"
-    );
+    private static final URI FILES_URI =
+            BackendConfig.uri("/api/lockbox/files/");
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15))

@@ -24,7 +24,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public final class LockboxDownloadService {
-    private static final URI BASE = URI.create("https://localhost:8443/api/lockbox/files/");
+    private static final URI BASE = BackendConfig.uri("/api/lockbox/files/");
     private static final int MANIFEST_LENGTH = 264;
     private static final int SIGNATURE_LENGTH = 4_675;
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -154,9 +154,12 @@ public final class LockboxDownloadService {
             Files.writeString(sharePart, sidecarJson(file), java.nio.charset.StandardCharsets.UTF_8);
 
             MessageDigest digest = MessageDigest.getInstance("SHA3-512");
-            HttpRequest request = HttpRequest.newBuilder(URI.create(
-                            "https://localhost:8443/api/lockbox/shares/received/"
-                                    + file.shareId() + "/container"))
+            HttpRequest request = HttpRequest.newBuilder(
+                            BackendConfig.uri(
+                                    "/api/lockbox/shares/received/"
+                                            + file.shareId()
+                                            + "/container"
+                            ))
                     .timeout(Duration.ofHours(12))
                     .header("Authorization", "Bearer " + token)
                     .header("Accept", "application/x-filedrive-csemlk03")

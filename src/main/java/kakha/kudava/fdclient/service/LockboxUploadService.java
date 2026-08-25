@@ -27,9 +27,7 @@ import java.util.function.DoubleConsumer;
 public final class LockboxUploadService {
 
     private static final URI UPLOAD_URI =
-            URI.create(
-                    "https://localhost:8443/api/lockbox/files"
-            );
+            BackendConfig.uri("/api/lockbox/files");
 
     private static final Duration CONNECT_TIMEOUT =
             Duration.ofSeconds(15);

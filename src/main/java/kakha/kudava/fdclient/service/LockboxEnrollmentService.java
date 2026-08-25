@@ -20,9 +20,7 @@ import java.util.concurrent.CompletionException;
 public final class LockboxEnrollmentService {
 
     private static final URI ENROLLMENT_URI =
-            URI.create(
-                    "https://localhost:8443/api/lockbox/enrollments"
-            );
+            BackendConfig.uri("/api/lockbox/enrollments");
 
     private static final Duration CONNECT_TIMEOUT =
             Duration.ofSeconds(15);

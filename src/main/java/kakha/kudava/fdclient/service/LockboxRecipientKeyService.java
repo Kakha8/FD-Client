@@ -21,7 +21,7 @@ import java.util.concurrent.CompletionException;
 public final class LockboxRecipientKeyService {
 
     private static final URI RECIPIENTS_URI = URI.create(
-            "https://localhost:8443/api/lockbox/share-recipients/"
+            BackendConfig.uri("/api/lockbox/share-recipients/").toString()
     );
 
     private static final int KEY_ID_LENGTH = 32;

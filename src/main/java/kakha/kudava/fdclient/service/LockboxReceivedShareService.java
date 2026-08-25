@@ -21,7 +21,7 @@ import java.util.concurrent.CompletionException;
 
 public final class LockboxReceivedShareService {
     private static final URI LIST_URI = URI.create(
-            "https://localhost:8443/api/lockbox/shares/received");
+            BackendConfig.uri("/api/lockbox/shares/received").toString());
     private static final ObjectMapper JSON = new ObjectMapper();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15)).build();

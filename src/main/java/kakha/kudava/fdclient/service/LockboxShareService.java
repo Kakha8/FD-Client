@@ -22,7 +22,7 @@ import java.util.concurrent.CompletableFuture;
 public final class LockboxShareService {
     static final byte[] GRANT_DOMAIN =
             "FD-CSE-V3-SHARE-GRANT-V1\0".getBytes(StandardCharsets.US_ASCII);
-    private static final URI SHARES_URI = URI.create("https://localhost:8443/api/lockbox/shares");
+    private static final URI SHARES_URI = BackendConfig.uri("/api/lockbox/shares");
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final AuthService auth;

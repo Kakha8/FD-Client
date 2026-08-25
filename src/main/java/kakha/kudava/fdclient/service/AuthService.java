@@ -22,7 +22,7 @@ import java.util.concurrent.CompletionException;
 public final class AuthService {
 
     private static final URI AUTH_URI =
-            URI.create("https://localhost:8443/api/auth/");
+            BackendConfig.uri("/api/auth/");
 
     private static final URI LOGIN_URI =
             AUTH_URI.resolve("login");

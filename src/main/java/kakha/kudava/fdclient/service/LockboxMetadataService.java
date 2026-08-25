@@ -26,9 +26,8 @@ import java.util.concurrent.CompletionException;
 
 public final class LockboxMetadataService {
 
-    private static final URI LIST_URI = URI.create(
-            "https://localhost:8443/api/lockbox/files/private-metadata"
-    );
+    private static final URI LIST_URI =
+            BackendConfig.uri("/api/lockbox/files/private-metadata");
     private static final int MAX_MANIFEST = 1_024;
     private static final int MAX_SIGNATURE = 16 * 1_024;
     private static final int MAX_HEADER = 1024 * 1024;
