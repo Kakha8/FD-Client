@@ -39,12 +39,20 @@ public final class LockboxMetadataService {
             .connectTimeout(Duration.ofSeconds(15)).build();
 
     public CompletableFuture<List<PrivateFile>> list(String accessToken) {
-        return list(accessToken, null);
+        return list(accessToken, null, null);
     }
 
     public CompletableFuture<List<PrivateFile>> list(
             String accessToken,
             UUID recipientPublicUuid
+    ) {
+        return list(accessToken, recipientPublicUuid, null);
+    }
+
+    public CompletableFuture<List<PrivateFile>> list(
+            String accessToken,
+            UUID recipientPublicUuid,
+            UUID deviceId
     ) {
         if (accessToken == null || accessToken.isBlank()) {
             return CompletableFuture.failedFuture(
@@ -63,11 +71,11 @@ public final class LockboxMetadataService {
                     }
                     return parseResponse(response);
                 });
-        if (recipientPublicUuid == null) {
+        if (recipientPublicUuid == null || deviceId == null) {
             return owned.thenApply(web -> merge(localFiles(null), web));
         }
         return owned.thenCombine(
-                receivedShares.list(accessToken, recipientPublicUuid),
+                receivedShares.list(accessToken, recipientPublicUuid, deviceId),
                 (ownedFiles, sharedFiles) -> {
                     List<PrivateFile> web = new ArrayList<>(ownedFiles.size() + sharedFiles.size());
                     web.addAll(ownedFiles);

@@ -28,13 +28,16 @@ public final class LockboxReceivedShareService {
 
     public CompletableFuture<List<LockboxMetadataService.PrivateFile>> list(
             String accessToken,
-            UUID recipientPublicUuid
+            UUID recipientPublicUuid,
+            UUID deviceId
     ) {
-        if (accessToken == null || accessToken.isBlank() || recipientPublicUuid == null) {
+        if (accessToken == null || accessToken.isBlank()
+                || recipientPublicUuid == null || deviceId == null) {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("No authenticated Lockbox account is available."));
         }
-        HttpRequest request = HttpRequest.newBuilder(LIST_URI)
+        URI requestUri = URI.create(LIST_URI + "?deviceId=" + deviceId);
+        HttpRequest request = HttpRequest.newBuilder(requestUri)
                 .timeout(Duration.ofMinutes(2))
                 .header("Authorization", "Bearer " + accessToken)
                 .header("Accept", "application/json")

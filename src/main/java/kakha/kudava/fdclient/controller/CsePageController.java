@@ -21,6 +21,7 @@ import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TextInputDialog;
+import javafx.scene.control.ChoiceDialog;
 import javafx.scene.layout.AnchorPane;
 import javafx.stage.FileChooser;
 import javafx.stage.DirectoryChooser;
@@ -37,6 +38,8 @@ import kakha.kudava.fdclient.service.LockboxDownloadService;
 import kakha.kudava.fdclient.service.LockboxDeletionService;
 import kakha.kudava.fdclient.service.LockboxShareService;
 import kakha.kudava.fdclient.service.LockboxDecryptExportService;
+import kakha.kudava.fdclient.service.LockboxOwnDevice;
+import kakha.kudava.fdclient.service.LockboxOwnDeviceService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -179,6 +182,7 @@ public final class CsePageController {
             private final MenuItem deleteLocal = new MenuItem("Delete locally");
             private final MenuItem deleteWeb = new MenuItem("Delete from web");
             private final MenuItem share = new MenuItem("Share…");
+            private final MenuItem shareWithDevice = new MenuItem("Share with my device…");
             {
                 menu.setStyle("-fx-font-size: 17px; -fx-padding: 0 6 0 6;");
                 export.setOnAction(event -> exportLocalArtifacts(getTableRow().getItem()));
@@ -188,6 +192,8 @@ public final class CsePageController {
                 deleteLocal.setOnAction(event -> deleteLocalArtifacts(getTableRow().getItem(), menu));
                 deleteWeb.setOnAction(event -> deleteWebArtifacts(getTableRow().getItem(), menu));
                 share.setOnAction(event -> shareFile(getTableRow().getItem(), menu));
+                shareWithDevice.setOnAction(event ->
+                        shareFileWithOwnDevice(getTableRow().getItem(), menu));
             }
 
             @Override
@@ -219,6 +225,7 @@ public final class CsePageController {
                 if (file != null && file.accessKind() == LockboxMetadataService.AccessKind.OWNED
                         && file.serverId() != null && file.localContainerPath() != null) {
                     menu.getItems().add(0, share);
+                    menu.getItems().add(1, shareWithDevice);
                 }
                 setGraphic(file != null && !menu.getItems().isEmpty() ? menu : null);
                 setText(null);
@@ -807,7 +814,20 @@ public final class CsePageController {
         refreshLockboxBtn.setDisable(true);
         lockboxFileTable.setDisable(true);
         lockboxFileTable.setPlaceholder(new Label("Loading Lockbox files..."));
-        metadataService.list(authService.getAccessToken(), authService.getPublicUuid())
+        final UUID deviceId;
+        try {
+            deviceId = LockboxDeviceIdentity.loadOrCreate();
+        } catch (RuntimeException error) {
+            refreshLockboxBtn.setDisable(false);
+            lockboxFileTable.setDisable(false);
+            lockboxFileTable.setPlaceholder(new Label(messageOf(
+                    error, "Could not load this device identity.")));
+            return;
+        }
+        metadataService.list(
+                        authService.getAccessToken(),
+                        authService.getPublicUuid(),
+                        deviceId)
                 .whenComplete((files, error) -> Platform.runLater(() -> {
                     if (error != null) {
                         if (allowSessionRefresh && causedBy(
@@ -976,7 +996,10 @@ public final class CsePageController {
         if (file.localContainerPath() != null) {
             operation = decryptExportService.decryptAndExport(file, destination);
         } else {
-            operation = downloadService.download(file, authService.getAccessToken())
+            operation = downloadService.download(
+                            file,
+                            authService.getAccessToken(),
+                            LockboxDeviceIdentity.loadOrCreate())
                     .thenCompose(ignored -> {
                         Path localContainer = encryptionService.artifactDirectory()
                                 .resolve(file.clientFileId() + ".fdcse");
@@ -1040,7 +1063,10 @@ public final class CsePageController {
 
         menu.setDisable(true);
         cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
-        downloadService.download(file, authService.getAccessToken())
+        downloadService.download(
+                        file,
+                        authService.getAccessToken(),
+                        LockboxDeviceIdentity.loadOrCreate())
                 .whenComplete((ignored, error) -> Platform.runLater(() -> {
                     if (error != null) {
                         if (allowSessionRefresh && causedBy(
@@ -1228,6 +1254,76 @@ public final class CsePageController {
                     alert.setContentText("Recipient: " + result.recipientUsername());
                     if (owner != null) alert.initOwner(owner);
                     alert.showAndWait();
+                }));
+    }
+
+    private void shareFileWithOwnDevice(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null || file.serverId() == null || file.localContainerPath() == null) return;
+        if (authService == null || !authService.isAuthenticated()) {
+            showError("Your session is not authenticated. Log in again.");
+            return;
+        }
+
+        final UUID currentDeviceId;
+        try {
+            currentDeviceId = LockboxDeviceIdentity.loadOrCreate();
+        } catch (RuntimeException error) {
+            showError(messageOf(error, "Could not load this device identity."));
+            return;
+        }
+
+        menu.setDisable(true);
+        cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        new LockboxOwnDeviceService(authService).listOtherDevices(currentDeviceId)
+                .whenComplete((devices, listError) -> Platform.runLater(() -> {
+                    if (listError != null) {
+                        menu.setDisable(false);
+                        cseProgressBar.setProgress(0);
+                        showError(messageOf(listError, "Could not load your other devices."));
+                        return;
+                    }
+                    if (devices.isEmpty()) {
+                        menu.setDisable(false);
+                        cseProgressBar.setProgress(0);
+                        showError("No other active Lockbox devices are registered for this account.");
+                        return;
+                    }
+
+                    ChoiceDialog<LockboxOwnDevice> dialog =
+                            new ChoiceDialog<>(devices.getFirst(), devices);
+                    dialog.setTitle("Share with my device");
+                    dialog.setHeaderText("Share " + file.filename());
+                    dialog.setContentText("Target device:");
+                    Window owner = lockboxFileTable.getScene().getWindow();
+                    if (owner != null) dialog.initOwner(owner);
+                    LockboxOwnDevice target = dialog.showAndWait().orElse(null);
+                    if (target == null) {
+                        menu.setDisable(false);
+                        cseProgressBar.setProgress(0);
+                        return;
+                    }
+
+                    new LockboxShareService(authService)
+                            .shareWithOwnDevice(file, target, 0)
+                            .whenComplete((result, shareError) -> Platform.runLater(() -> {
+                                menu.setDisable(false);
+                                cseProgressBar.setProgress(shareError == null ? 1 : 0);
+                                if (shareError != null) {
+                                    showError(messageOf(
+                                            shareError,
+                                            "The Lockbox file could not be shared with that device."));
+                                    return;
+                                }
+                                Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                                alert.setTitle("Device share created");
+                                alert.setHeaderText("The Lockbox file was shared successfully.");
+                                alert.setContentText("Target device: " + target.deviceName());
+                                if (owner != null) alert.initOwner(owner);
+                                alert.showAndWait();
+                            }));
                 }));
     }
 

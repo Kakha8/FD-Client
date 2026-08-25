@@ -34,12 +34,17 @@ public final class LockboxDownloadService {
 
     public CompletableFuture<Void> download(
             LockboxMetadataService.PrivateFile file,
-            String accessToken
+            String accessToken,
+            UUID deviceId
     ) {
-        return CompletableFuture.runAsync(() -> downloadBlocking(file, accessToken));
+        return CompletableFuture.runAsync(() -> downloadBlocking(file, accessToken, deviceId));
     }
 
-    private void downloadBlocking(LockboxMetadataService.PrivateFile file, String token) {
+    private void downloadBlocking(
+            LockboxMetadataService.PrivateFile file,
+            String token,
+            UUID deviceId
+    ) {
         if (file == null || file.serverId() == null) {
             throw new IllegalArgumentException("A web Lockbox file is required.");
         }
@@ -47,7 +52,7 @@ public final class LockboxDownloadService {
             throw new IllegalStateException("No authenticated session is available.");
         }
         if (file.accessKind() == LockboxMetadataService.AccessKind.SHARED_WITH_ME) {
-            downloadReceivedShare(file, token);
+            downloadReceivedShare(file, token, deviceId);
             return;
         }
 
@@ -123,9 +128,10 @@ public final class LockboxDownloadService {
 
     private void downloadReceivedShare(
             LockboxMetadataService.PrivateFile file,
-            String token
+            String token,
+            UUID deviceId
     ) {
-        if (file.shareId() == null || file.shareArtifacts() == null) {
+        if (file.shareId() == null || file.shareArtifacts() == null || deviceId == null) {
             throw new IllegalArgumentException("A verified received share is required.");
         }
         Path directory = new CseEncryptionService().artifactDirectory();
@@ -159,6 +165,7 @@ public final class LockboxDownloadService {
                                     "/api/lockbox/shares/received/"
                                             + file.shareId()
                                             + "/container"
+                                            + "?deviceId=" + deviceId
                             ))
                     .timeout(Duration.ofHours(12))
                     .header("Authorization", "Bearer " + token)

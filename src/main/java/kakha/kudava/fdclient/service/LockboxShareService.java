@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -61,6 +62,30 @@ public final class LockboxShareService {
                         artifacts(file), auth.getPublicUuid(), recipient,
                         expiresAtUnixSeconds)).thenCompose(grant -> postWithOneRefresh(
                                 file.serverId(), grant, false)));
+    }
+
+    public CompletableFuture<ShareResult> shareWithOwnDevice(
+            LockboxMetadataService.PrivateFile file,
+            LockboxOwnDevice targetDevice,
+            long expiresAtUnixSeconds
+    ) {
+        if (file == null || file.serverId() == null || file.localContainerPath() == null) {
+            return CompletableFuture.failedFuture(new ShareException(
+                    "Sharing requires both the local artifacts and web copy."));
+        }
+        if (!auth.isAuthenticated()) {
+            return CompletableFuture.failedFuture(new ShareException("Log in before sharing a file."));
+        }
+        Objects.requireNonNull(targetDevice, "targetDevice");
+        LockboxRecipientKeys recipient = new LockboxRecipientKeys(
+                auth.getUserId(),
+                auth.getPublicUuid(),
+                auth.getUsername(),
+                List.of(targetDevice.primaryEncryptionKey())
+        );
+        return CompletableFuture.supplyAsync(() -> grants.create(
+                artifacts(file), auth.getPublicUuid(), recipient, expiresAtUnixSeconds
+        )).thenCompose(grant -> postWithOneRefresh(file.serverId(), grant, false));
     }
 
     private CompletableFuture<ShareResult> postWithOneRefresh(
