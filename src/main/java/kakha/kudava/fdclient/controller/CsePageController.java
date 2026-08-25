@@ -999,7 +999,9 @@ public final class CsePageController {
             operation = downloadService.download(
                             file,
                             authService.getAccessToken(),
-                            LockboxDeviceIdentity.loadOrCreate())
+                            LockboxDeviceIdentity.loadOrCreate(),
+                            progress -> Platform.runLater(
+                                    () -> cseProgressBar.setProgress(progress)))
                     .thenCompose(ignored -> {
                         Path localContainer = encryptionService.artifactDirectory()
                                 .resolve(file.clientFileId() + ".fdcse");
@@ -1066,7 +1068,9 @@ public final class CsePageController {
         downloadService.download(
                         file,
                         authService.getAccessToken(),
-                        LockboxDeviceIdentity.loadOrCreate())
+                        LockboxDeviceIdentity.loadOrCreate(),
+                        progress -> Platform.runLater(
+                                () -> cseProgressBar.setProgress(progress)))
                 .whenComplete((ignored, error) -> Platform.runLater(() -> {
                     if (error != null) {
                         if (allowSessionRefresh && causedBy(

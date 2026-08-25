@@ -22,6 +22,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.DoubleConsumer;
 
 public final class LockboxDownloadService {
     private static final URI BASE = BackendConfig.uri("/api/lockbox/files/");
@@ -37,13 +38,27 @@ public final class LockboxDownloadService {
             String accessToken,
             UUID deviceId
     ) {
-        return CompletableFuture.runAsync(() -> downloadBlocking(file, accessToken, deviceId));
+        return download(file, accessToken, deviceId, ignored -> {});
+    }
+
+    public CompletableFuture<Void> download(
+            LockboxMetadataService.PrivateFile file,
+            String accessToken,
+            UUID deviceId,
+            DoubleConsumer progressListener
+    ) {
+        if (progressListener == null) {
+            throw new IllegalArgumentException("A download progress listener is required.");
+        }
+        return CompletableFuture.runAsync(() ->
+                downloadBlocking(file, accessToken, deviceId, progressListener));
     }
 
     private void downloadBlocking(
             LockboxMetadataService.PrivateFile file,
             String token,
-            UUID deviceId
+            UUID deviceId,
+            DoubleConsumer progressListener
     ) {
         if (file == null || file.serverId() == null) {
             throw new IllegalArgumentException("A web Lockbox file is required.");
@@ -52,7 +67,7 @@ public final class LockboxDownloadService {
             throw new IllegalStateException("No authenticated session is available.");
         }
         if (file.accessKind() == LockboxMetadataService.AccessKind.SHARED_WITH_ME) {
-            downloadReceivedShare(file, token, deviceId);
+            downloadReceivedShare(file, token, deviceId, progressListener);
             return;
         }
 
@@ -79,6 +94,14 @@ public final class LockboxDownloadService {
             Files.write(manifestPart, manifest);
             Files.write(signaturePart, signature);
 
+            ByteBuffer signed = ByteBuffer.wrap(manifest).order(ByteOrder.LITTLE_ENDIAN);
+            long signedRevision = signed.getLong(32);
+            long signedSize = signed.getLong(40);
+            byte[] signedHash = Arrays.copyOfRange(manifest, 48, 112);
+            if (signedSize < 1) {
+                throw new IllegalStateException("The signed container size is invalid.");
+            }
+            progressListener.accept(0);
             MessageDigest digest = MessageDigest.getInstance("SHA3-512");
             HttpResponse<InputStream> response = send(file.serverId(), "container", token,
                     HttpResponse.BodyHandlers.ofInputStream());
@@ -90,13 +113,10 @@ public final class LockboxDownloadService {
                     output.write(buffer, 0, count);
                     digest.update(buffer, 0, count);
                     received = Math.addExact(received, count);
+                    progressListener.accept(progress(received, signedSize));
                 }
             }
 
-            ByteBuffer signed = ByteBuffer.wrap(manifest).order(ByteOrder.LITTLE_ENDIAN);
-            long signedRevision = signed.getLong(32);
-            long signedSize = signed.getLong(40);
-            byte[] signedHash = Arrays.copyOfRange(manifest, 48, 112);
             if (signedRevision != file.revision() || signedSize != received
                     || !MessageDigest.isEqual(signedHash, digest.digest())) {
                 throw new IllegalStateException("Downloaded container does not match its signed manifest.");
@@ -129,7 +149,8 @@ public final class LockboxDownloadService {
     private void downloadReceivedShare(
             LockboxMetadataService.PrivateFile file,
             String token,
-            UUID deviceId
+            UUID deviceId,
+            DoubleConsumer progressListener
     ) {
         if (file.shareId() == null || file.shareArtifacts() == null || deviceId == null) {
             throw new IllegalArgumentException("A verified received share is required.");
@@ -160,6 +181,13 @@ public final class LockboxDownloadService {
             Files.writeString(sharePart, sidecarJson(file), java.nio.charset.StandardCharsets.UTF_8);
 
             MessageDigest digest = MessageDigest.getInstance("SHA3-512");
+            ByteBuffer signedManifest = ByteBuffer.wrap(artifacts.manifest())
+                    .order(ByteOrder.LITTLE_ENDIAN);
+            long expectedSize = signedManifest.getLong(40);
+            if (expectedSize < 1) {
+                throw new IllegalStateException("The signed container size is invalid.");
+            }
+            progressListener.accept(0);
             HttpRequest request = HttpRequest.newBuilder(
                             BackendConfig.uri(
                                     "/api/lockbox/shares/received/"
@@ -181,6 +209,7 @@ public final class LockboxDownloadService {
                     output.write(buffer, 0, count);
                     digest.update(buffer, 0, count);
                     received = Math.addExact(received, count);
+                    progressListener.accept(progress(received, expectedSize));
                 }
             }
 
@@ -268,6 +297,11 @@ public final class LockboxDownloadService {
             throw new UnauthorizedException("Your session is no longer authorized.");
         }
         if (status != 200) throw new IllegalStateException("Download returned HTTP " + status + ".");
+    }
+
+    private static double progress(long received, long expected) {
+        if (expected <= 0) return 0;
+        return Math.min(1.0, (double) received / (double) expected);
     }
 
     public static final class UnauthorizedException extends IllegalStateException {
