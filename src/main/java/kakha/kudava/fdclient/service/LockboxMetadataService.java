@@ -96,7 +96,18 @@ public final class LockboxMetadataService {
             JsonNode files = json.readTree(response.body()).path("files");
             if (!files.isArray()) throw new IllegalStateException("Invalid Lockbox list response.");
             List<PrivateFile> result = new ArrayList<>(files.size());
-            for (JsonNode item : files) result.add(decryptItem(item));
+            for (JsonNode item : files) {
+                try {
+                    result.add(decryptItem(item));
+                } catch (RuntimeException error) {
+                    // An account can own files created by another registered device. Its
+                    // device-bound private keys are intentionally unavailable here; those
+                    // files become readable only through a share targeted to this device.
+                    System.err.println(
+                            "Ignoring owned Lockbox metadata unavailable on this device: "
+                                    + error.getMessage());
+                }
+            }
             return List.copyOf(result);
         } catch (RuntimeException error) {
             throw error;
