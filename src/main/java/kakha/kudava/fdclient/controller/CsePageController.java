@@ -417,8 +417,8 @@ public final class CsePageController {
                 loadPrivateFileNames();
             }
             case NOT_REGISTERED -> showLockboxState(
-                    LockboxUiState.BLOCKED,
-                    "Lockbox is enabled, but this device is not registered."
+                    LockboxUiState.DEVICE_NOT_REGISTERED,
+                    "Lockbox is enabled. Register this device to use it here."
             );
             case PENDING -> showLockboxState(
                     LockboxUiState.BLOCKED,
@@ -501,16 +501,17 @@ public final class CsePageController {
 
         boolean canActivate =
                 state == LockboxUiState.NOT_ENABLED
+                        || state == LockboxUiState.DEVICE_NOT_REGISTERED
                         || state == LockboxUiState.ERROR;
 
         activateLockboxBtn.setVisible(canActivate);
         activateLockboxBtn.setManaged(canActivate);
         activateLockboxBtn.setDisable(!canActivate);
-        activateLockboxBtn.setText(
-                state == LockboxUiState.ERROR
-                        ? "Try Again"
-                        : "Activate Lockbox"
-        );
+        activateLockboxBtn.setText(switch (state) {
+            case ERROR -> "Try Again";
+            case DEVICE_NOT_REGISTERED -> "Register Device";
+            default -> "Activate Lockbox";
+        });
 
         boolean ready = state == LockboxUiState.READY;
         refreshLockboxBtn.setVisible(ready);
@@ -527,6 +528,7 @@ public final class CsePageController {
     private enum LockboxUiState {
         LOADING,
         NOT_ENABLED,
+        DEVICE_NOT_REGISTERED,
         ACTIVATING,
         ENROLLMENT_PENDING,
         READY,
