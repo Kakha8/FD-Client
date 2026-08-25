@@ -42,12 +42,36 @@ public final class LockboxEnrollmentService {
             new LockboxEnrollmentCrypto();
 
     public CompletableFuture<EnrollmentChallenge> beginEnrollment(
-            String accessToken
+            String accessToken,
+            UUID deviceId,
+            String installationHandle,
+            String deviceName
     ) {
         if (accessToken == null || accessToken.isBlank()) {
             return CompletableFuture.failedFuture(
                     new EnrollmentException(
                             "No authenticated session is available."
+                    )
+            );
+        }
+
+        Objects.requireNonNull(deviceId, "deviceId");
+        requireInstallationHandle(installationHandle);
+        String normalizedDeviceName = requireDeviceName(deviceName);
+
+        final String requestBody;
+        try {
+            requestBody = objectMapper.writeValueAsString(
+                    objectMapper.createObjectNode()
+                            .put("deviceId", deviceId.toString())
+                            .put("installationHandle", installationHandle)
+                            .put("deviceName", normalizedDeviceName)
+            );
+        } catch (Exception exception) {
+            return CompletableFuture.failedFuture(
+                    new EnrollmentException(
+                            "Could not create the enrollment request.",
+                            exception
                     )
             );
         }
@@ -60,7 +84,11 @@ public final class LockboxEnrollmentService {
                         "Bearer " + accessToken
                 )
                 .header("Accept", "application/json")
-                .POST(HttpRequest.BodyPublishers.noBody())
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        requestBody,
+                        StandardCharsets.UTF_8
+                ))
                 .build();
 
         return httpClient.sendAsync(
@@ -69,7 +97,12 @@ public final class LockboxEnrollmentService {
                                 StandardCharsets.UTF_8
                         )
                 )
-                .thenApply(this::readChallenge);
+                .thenApply(response -> readChallenge(
+                        response,
+                        deviceId,
+                        installationHandle,
+                        normalizedDeviceName
+                ));
     }
 
     public CompletableFuture<LockboxStatus> getStatus(
@@ -133,19 +166,18 @@ public final class LockboxEnrollmentService {
 
     public CompletableFuture<EnrollmentResult> completeEnrollment(
             String accessToken,
-            EnrollmentChallenge challenge,
-            UUID deviceId,
-            String deviceName
+            EnrollmentChallenge challenge
     ) {
         if (accessToken == null || accessToken.isBlank()) {
             return CompletableFuture.failedFuture(
                     new EnrollmentException("No authenticated session is available.")
             );
         }
+        Objects.requireNonNull(challenge, "challenge");
 
         return CompletableFuture.supplyAsync(() -> enrollmentCrypto.createProof(
                 challenge.enrollmentId(), challenge.challenge(), challenge.expiresAt(),
-                deviceId, deviceName
+                challenge.deviceId(), challenge.installationHandle(), challenge.deviceName()
         )).thenCompose(proof -> sendCompletion(accessToken, challenge.enrollmentId(), proof));
     }
 
@@ -158,6 +190,7 @@ public final class LockboxEnrollmentService {
             JsonNode body = objectMapper.createObjectNode()
                     .put("challenge", proof.challenge())
                     .put("deviceId", proof.deviceId().toString())
+                    .put("installationHandle", proof.installationHandle())
                     .put("deviceName", proof.deviceName())
                     .set("encryptionKey", objectMapper.createObjectNode()
                             .put("algorithm", "ML_KEM_1024")
@@ -218,7 +251,10 @@ public final class LockboxEnrollmentService {
     }
 
     private EnrollmentChallenge readChallenge(
-            HttpResponse<String> response
+            HttpResponse<String> response,
+            UUID deviceId,
+            String installationHandle,
+            String deviceName
     ) {
         if (response.statusCode() == 201) {
             try {
@@ -232,7 +268,10 @@ public final class LockboxEnrollmentService {
                         requireText(json, "challenge"),
                         Instant.parse(
                                 requireText(json, "expiresAt")
-                        )
+                        ),
+                        deviceId,
+                        installationHandle,
+                        deviceName
                 );
             } catch (Exception exception) {
                 throw new CompletionException(
@@ -276,6 +315,32 @@ public final class LockboxEnrollmentService {
         return value;
     }
 
+    private static void requireInstallationHandle(String value) {
+        try {
+            byte[] decoded = java.util.Base64.getDecoder().decode(value);
+            if (decoded.length != 32
+                    || !java.util.Base64.getEncoder().encodeToString(decoded).equals(value)) {
+                throw new IllegalArgumentException();
+            }
+        } catch (RuntimeException exception) {
+            throw new EnrollmentException(
+                    "The installation handle must be canonical Base64 for exactly 32 bytes."
+            );
+        }
+    }
+
+    private static String requireDeviceName(String value) {
+        if (value == null || value.isBlank()) {
+            throw new EnrollmentException("Device name is required.");
+        }
+        String normalized = value.trim();
+        if (normalized.length() > 100
+                || normalized.getBytes(StandardCharsets.UTF_8).length > 255) {
+            throw new EnrollmentException("Device name is too long.");
+        }
+        return normalized;
+    }
+
     private String responseDetails(String body) {
         if (body == null || body.isBlank()) {
             return ".";
@@ -296,17 +361,23 @@ public final class LockboxEnrollmentService {
     public record EnrollmentChallenge(
             UUID enrollmentId,
             String challenge,
-            Instant expiresAt
+            Instant expiresAt,
+            UUID deviceId,
+            String installationHandle,
+            String deviceName
     ) {
         public EnrollmentChallenge {
             Objects.requireNonNull(enrollmentId, "enrollmentId");
             Objects.requireNonNull(expiresAt, "expiresAt");
+            Objects.requireNonNull(deviceId, "deviceId");
 
             if (challenge == null || challenge.isBlank()) {
                 throw new IllegalArgumentException(
                         "Enrollment challenge is required."
                 );
             }
+            requireInstallationHandle(installationHandle);
+            deviceName = requireDeviceName(deviceName);
         }
     }
 

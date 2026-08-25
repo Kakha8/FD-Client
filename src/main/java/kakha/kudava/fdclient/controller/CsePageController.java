@@ -31,6 +31,7 @@ import kakha.kudava.fdclient.service.CseEncryptionService;
 import kakha.kudava.fdclient.service.LockboxUploadService;
 import kakha.kudava.fdclient.service.LockboxEnrollmentService;
 import kakha.kudava.fdclient.service.LockboxDeviceIdentity;
+import kakha.kudava.fdclient.service.LockboxInstallationIdentity;
 import kakha.kudava.fdclient.service.LockboxMetadataService;
 import kakha.kudava.fdclient.service.LockboxDownloadService;
 import kakha.kudava.fdclient.service.LockboxDeletionService;
@@ -257,10 +258,32 @@ public final class CsePageController {
         );
         retryStatusCheck = false;
 
+        final UUID deviceId;
+        final String installationHandle;
+        final String deviceName;
+        try {
+            deviceId = LockboxDeviceIdentity.loadOrCreate();
+            UUID installationId = LockboxInstallationIdentity.loadOrCreate();
+            installationHandle = LockboxInstallationIdentity.deriveHandle(
+                    installationId,
+                    authService.getPublicUuid()
+            );
+            deviceName = localDeviceName();
+        } catch (RuntimeException error) {
+            showLockboxState(
+                    LockboxUiState.ERROR,
+                    messageOf(error, "Could not load the Lockbox installation identity.")
+            );
+            return;
+        }
+
         CompletableFuture<
                 LockboxEnrollmentService.EnrollmentChallenge
                 > enrollment = enrollmentService.beginEnrollment(
-                authService.getAccessToken()
+                authService.getAccessToken(),
+                deviceId,
+                installationHandle,
+                deviceName
         );
 
         activeEnrollment = enrollment;
@@ -436,19 +459,9 @@ public final class CsePageController {
         showLockboxState(LockboxUiState.ACTIVATING,
                 "Generating device keys and signing the enrollment challenge...");
 
-        UUID deviceId;
-        try {
-            deviceId = LockboxDeviceIdentity.loadOrCreate();
-        } catch (RuntimeException error) {
-            activeEnrollment = null;
-            showLockboxState(LockboxUiState.ERROR,
-                    messageOf(error, "Could not create the Lockbox device identity."));
-            return;
-        }
-        String deviceName = localDeviceName();
         CompletableFuture<LockboxEnrollmentService.EnrollmentResult> completion =
                 enrollmentService.completeEnrollment(
-                        authService.getAccessToken(), challenge, deviceId, deviceName);
+                        authService.getAccessToken(), challenge);
         activeEnrollment = completion;
         completion.whenComplete((result, error) -> Platform.runLater(() -> {
             if (activeEnrollment != completion) {

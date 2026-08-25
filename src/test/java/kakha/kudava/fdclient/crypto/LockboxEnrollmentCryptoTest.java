@@ -19,6 +19,7 @@ class LockboxEnrollmentCryptoTest {
         UUID enrollmentId = UUID.fromString("00112233-4455-6677-8899-aabbccddeeff");
         UUID deviceId = UUID.fromString("fedcba98-7654-3210-ffff-eeeeeeeeeeee");
         byte[] challenge = filled(32, (byte) 0x11);
+        byte[] installationHandle = filled(32, (byte) 0x66);
         byte[] encryptionKeyId = filled(32, (byte) 0x22);
         byte[] encryptionPublicKey = filled(1_568, (byte) 0x33);
         byte[] signingKeyId = filled(32, (byte) 0x44);
@@ -26,11 +27,11 @@ class LockboxEnrollmentCryptoTest {
 
         byte[] transcript = LockboxEnrollmentCrypto.encodeTranscript(
                 enrollmentId, challenge, Instant.ofEpochMilli(0x0102030405060708L),
-                deviceId, " Test Device ", encryptionKeyId, encryptionPublicKey,
+                deviceId, installationHandle, " Test Device ", encryptionKeyId, encryptionPublicKey,
                 signingKeyId, signingPublicKey
         );
 
-        byte[] domain = "FD-LOCKBOX-DEVICE-ENROLLMENT-V1\0"
+        byte[] domain = "FD-LOCKBOX-DEVICE-ENROLLMENT-V2\0"
                 .getBytes(StandardCharsets.US_ASCII);
         int offset = 0;
         assertArrayEquals(domain, Arrays.copyOfRange(transcript, offset, offset += domain.length));
@@ -39,6 +40,8 @@ class LockboxEnrollmentCryptoTest {
         assertArrayEquals(new byte[]{8, 7, 6, 5, 4, 3, 2, 1},
                 Arrays.copyOfRange(transcript, offset, offset += 8));
         assertArrayEquals(uuidBytes(deviceId), Arrays.copyOfRange(transcript, offset, offset += 16));
+        assertArrayEquals(installationHandle,
+                Arrays.copyOfRange(transcript, offset, offset += 32));
         assertArrayEquals(new byte[]{11, 0}, Arrays.copyOfRange(transcript, offset, offset += 2));
         assertArrayEquals("Test Device".getBytes(StandardCharsets.UTF_8),
                 Arrays.copyOfRange(transcript, offset, offset += 11));

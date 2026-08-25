@@ -14,7 +14,7 @@ import java.util.UUID;
 public final class LockboxEnrollmentCrypto {
 
     private static final byte[] DOMAIN =
-            "FD-LOCKBOX-DEVICE-ENROLLMENT-V1\0"
+            "FD-LOCKBOX-DEVICE-ENROLLMENT-V2\0"
                     .getBytes(StandardCharsets.US_ASCII);
 
     public EnrollmentProof createProof(
@@ -22,9 +22,15 @@ public final class LockboxEnrollmentCrypto {
             String encodedChallenge,
             Instant expiresAt,
             UUID deviceId,
+            String encodedInstallationHandle,
             String deviceName
     ) {
         byte[] challenge = decodeExact(encodedChallenge, 32, "challenge");
+        byte[] installationHandle = decodeExact(
+                encodedInstallationHandle,
+                32,
+                "installation handle"
+        );
         byte[] encryptionPublicKey = requireExact(
                 NativeCryptoBridge.getStoredMlKem1024PublicKey(),
                 1_568,
@@ -40,7 +46,7 @@ public final class LockboxEnrollmentCrypto {
         String normalizedName = normalizeDeviceName(deviceName);
 
         byte[] transcript = encodeTranscript(
-                enrollmentId, challenge, expiresAt, deviceId, normalizedName,
+                enrollmentId, challenge, expiresAt, deviceId, installationHandle, normalizedName,
                 encryptionKeyId, encryptionPublicKey, signingKeyId, signingPublicKey
         );
         byte[] signature = requireExact(
@@ -53,6 +59,7 @@ public final class LockboxEnrollmentCrypto {
         return new EnrollmentProof(
                 encodedChallenge,
                 deviceId,
+                encodedInstallationHandle,
                 normalizedName,
                 base64.encodeToString(encryptionKeyId),
                 base64.encodeToString(encryptionPublicKey),
@@ -64,7 +71,7 @@ public final class LockboxEnrollmentCrypto {
 
     static byte[] encodeTranscript(
             UUID enrollmentId, byte[] challenge, Instant expiresAt,
-            UUID deviceId, String deviceName,
+            UUID deviceId, byte[] installationHandle, String deviceName,
             byte[] encryptionKeyId, byte[] encryptionPublicKey,
             byte[] signingKeyId, byte[] signingPublicKey
     ) {
@@ -72,6 +79,7 @@ public final class LockboxEnrollmentCrypto {
         Objects.requireNonNull(expiresAt, "expiresAt");
         Objects.requireNonNull(deviceId, "deviceId");
         requireExact(challenge, 32, "challenge");
+        requireExact(installationHandle, 32, "installation handle");
         requireExact(encryptionKeyId, 32, "encryption key ID");
         requireExact(encryptionPublicKey, 1_568, "encryption public key");
         requireExact(signingKeyId, 32, "signing key ID");
@@ -88,6 +96,7 @@ public final class LockboxEnrollmentCrypto {
         out.writeBytes(challenge);
         out.writeBytes(littleEndianLong(expiresAt.toEpochMilli()));
         out.writeBytes(uuidBytes(deviceId));
+        out.writeBytes(installationHandle);
         writeU16(out, name.length);
         out.writeBytes(name);
         writeU16(out, 1);
@@ -161,6 +170,7 @@ public final class LockboxEnrollmentCrypto {
     public record EnrollmentProof(
             String challenge,
             UUID deviceId,
+            String installationHandle,
             String deviceName,
             String encryptionKeyId,
             String encryptionPublicKey,
