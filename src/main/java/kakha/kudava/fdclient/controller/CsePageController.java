@@ -52,6 +52,8 @@ import java.net.InetAddress;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class CsePageController {
 
@@ -129,6 +131,9 @@ public final class CsePageController {
 
     private boolean uploadCancelledByUser;
 
+    private CompletableFuture<Void> activeDownload;
+    private AtomicBoolean activeDownloadCancellation;
+
     private CompletableFuture<?> activeEnrollment;
 
     private LockboxEnrollmentService.EnrollmentChallenge
@@ -171,8 +176,17 @@ public final class CsePageController {
                 }
             }
         });
-        locationColumn.setCellValueFactory(row ->
-                new ReadOnlyStringWrapper(row.getValue().locationDisplayName()));
+        locationColumn.setCellValueFactory(row -> {
+            LockboxMetadataService.PrivateFile file = row.getValue();
+            if (file.accessKind() == LockboxMetadataService.AccessKind.SHARED_WITH_ME
+                    && authService != null
+                    && authService.getUsername() != null
+                    && authService.getUsername().equalsIgnoreCase(file.ownerUsername())) {
+                return new ReadOnlyStringWrapper(
+                        file.location().displayName() + " · Shared to this device");
+            }
+            return new ReadOnlyStringWrapper(file.locationDisplayName());
+        });
         actionsColumn.setCellFactory(column -> new TableCell<>() {
             private final MenuButton menu = new MenuButton("⋮");
             private final MenuItem export = new MenuItem("Export");
@@ -725,6 +739,14 @@ public final class CsePageController {
 
     @FXML
     private void onCancelUpload(ActionEvent event) {
+        AtomicBoolean downloadCancellation = activeDownloadCancellation;
+        if (activeDownload != null && !activeDownload.isDone()
+                && downloadCancellation != null) {
+            downloadCancellation.set(true);
+            cancelUploadBtn.setDisable(true);
+            return;
+        }
+
         CompletableFuture<
                 LockboxUploadService.UploadResult
                 > upload = activeUpload;
@@ -996,22 +1018,37 @@ public final class CsePageController {
         if (file.localContainerPath() != null) {
             operation = decryptExportService.decryptAndExport(file, destination);
         } else {
+            AtomicBoolean cancellation = new AtomicBoolean();
             operation = downloadService.download(
                             file,
                             authService.getAccessToken(),
                             LockboxDeviceIdentity.loadOrCreate(),
                             progress -> Platform.runLater(
-                                    () -> cseProgressBar.setProgress(progress)))
+                                    () -> cseProgressBar.setProgress(progress)),
+                            cancellation::get)
                     .thenCompose(ignored -> {
                         Path localContainer = encryptionService.artifactDirectory()
                                 .resolve(file.clientFileId() + ".fdcse");
                         return decryptExportService.decryptAndExport(
                                 file.withLocalContainerPath(localContainer), destination);
                     });
+            activeDownload = operation;
+            activeDownloadCancellation = cancellation;
+            showCancelButton();
         }
         operation
                 .whenComplete((ignored, error) -> Platform.runLater(() -> {
+                    if (activeDownload == operation) {
+                        activeDownload = null;
+                        activeDownloadCancellation = null;
+                        hideCancelButton();
+                    }
                     if (error != null) {
+                        if (causedBy(error, CancellationException.class)) {
+                            menu.setDisable(false);
+                            cseProgressBar.setProgress(0);
+                            return;
+                        }
                         if (allowSessionRefresh && causedBy(
                                 error, LockboxDownloadService.UnauthorizedException.class)) {
                             authService.refresh().whenComplete((token, refreshError) ->
@@ -1065,14 +1102,30 @@ public final class CsePageController {
 
         menu.setDisable(true);
         cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
-        downloadService.download(
+        AtomicBoolean cancellation = new AtomicBoolean();
+        CompletableFuture<Void> download = downloadService.download(
                         file,
                         authService.getAccessToken(),
                         LockboxDeviceIdentity.loadOrCreate(),
                         progress -> Platform.runLater(
-                                () -> cseProgressBar.setProgress(progress)))
+                                () -> cseProgressBar.setProgress(progress)),
+                        cancellation::get);
+        activeDownload = download;
+        activeDownloadCancellation = cancellation;
+        showCancelButton();
+        download
                 .whenComplete((ignored, error) -> Platform.runLater(() -> {
+                    if (activeDownload == download) {
+                        activeDownload = null;
+                        activeDownloadCancellation = null;
+                        hideCancelButton();
+                    }
                     if (error != null) {
+                        if (causedBy(error, CancellationException.class)) {
+                            menu.setDisable(false);
+                            cseProgressBar.setProgress(0);
+                            return;
+                        }
                         if (allowSessionRefresh && causedBy(
                                 error,
                                 LockboxDownloadService.UnauthorizedException.class

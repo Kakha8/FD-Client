@@ -23,6 +23,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.DoubleConsumer;
+import java.util.function.BooleanSupplier;
+import java.util.concurrent.CancellationException;
 
 public final class LockboxDownloadService {
     private static final URI BASE = BackendConfig.uri("/api/lockbox/files/");
@@ -47,18 +49,33 @@ public final class LockboxDownloadService {
             UUID deviceId,
             DoubleConsumer progressListener
     ) {
+        return download(file, accessToken, deviceId, progressListener, () -> false);
+    }
+
+    public CompletableFuture<Void> download(
+            LockboxMetadataService.PrivateFile file,
+            String accessToken,
+            UUID deviceId,
+            DoubleConsumer progressListener,
+            BooleanSupplier cancellationRequested
+    ) {
         if (progressListener == null) {
             throw new IllegalArgumentException("A download progress listener is required.");
         }
+        if (cancellationRequested == null) {
+            throw new IllegalArgumentException("A cancellation signal is required.");
+        }
         return CompletableFuture.runAsync(() ->
-                downloadBlocking(file, accessToken, deviceId, progressListener));
+                downloadBlocking(file, accessToken, deviceId,
+                        progressListener, cancellationRequested));
     }
 
     private void downloadBlocking(
             LockboxMetadataService.PrivateFile file,
             String token,
             UUID deviceId,
-            DoubleConsumer progressListener
+            DoubleConsumer progressListener,
+            BooleanSupplier cancellationRequested
     ) {
         if (file == null || file.serverId() == null) {
             throw new IllegalArgumentException("A web Lockbox file is required.");
@@ -67,7 +84,8 @@ public final class LockboxDownloadService {
             throw new IllegalStateException("No authenticated session is available.");
         }
         if (file.accessKind() == LockboxMetadataService.AccessKind.SHARED_WITH_ME) {
-            downloadReceivedShare(file, token, deviceId, progressListener);
+            downloadReceivedShare(file, token, deviceId,
+                    progressListener, cancellationRequested);
             return;
         }
 
@@ -110,6 +128,7 @@ public final class LockboxDownloadService {
             try (InputStream input = response.body(); var output = Files.newOutputStream(containerPart)) {
                 byte[] buffer = new byte[1024 * 1024];
                 for (int count; (count = input.read(buffer)) != -1; ) {
+                    requireNotCancelled(cancellationRequested);
                     output.write(buffer, 0, count);
                     digest.update(buffer, 0, count);
                     received = Math.addExact(received, count);
@@ -150,7 +169,8 @@ public final class LockboxDownloadService {
             LockboxMetadataService.PrivateFile file,
             String token,
             UUID deviceId,
-            DoubleConsumer progressListener
+            DoubleConsumer progressListener,
+            BooleanSupplier cancellationRequested
     ) {
         if (file.shareId() == null || file.shareArtifacts() == null || deviceId == null) {
             throw new IllegalArgumentException("A verified received share is required.");
@@ -206,6 +226,7 @@ public final class LockboxDownloadService {
             try (InputStream input = response.body(); var output = Files.newOutputStream(containerPart)) {
                 byte[] buffer = new byte[1024 * 1024];
                 for (int count; (count = input.read(buffer)) != -1; ) {
+                    requireNotCancelled(cancellationRequested);
                     output.write(buffer, 0, count);
                     digest.update(buffer, 0, count);
                     received = Math.addExact(received, count);
@@ -302,6 +323,12 @@ public final class LockboxDownloadService {
     private static double progress(long received, long expected) {
         if (expected <= 0) return 0;
         return Math.min(1.0, (double) received / (double) expected);
+    }
+
+    private static void requireNotCancelled(BooleanSupplier cancellationRequested) {
+        if (cancellationRequested.getAsBoolean()) {
+            throw new CancellationException("Download cancelled by user.");
+        }
     }
 
     public static final class UnauthorizedException extends IllegalStateException {
