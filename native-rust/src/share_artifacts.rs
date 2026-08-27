@@ -190,6 +190,7 @@ mod tests {
                 original_file_name: "secret.txt".into(),
                 mime_type: "text/plain".into(),
                 device_id: [0x55; 16],
+                client_file_id: None,
                 revision: 1,
                 previous_manifest_hash: [0; 64],
                 created_at_unix_millis: 1,

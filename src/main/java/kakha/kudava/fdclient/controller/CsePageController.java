@@ -40,6 +40,7 @@ import kakha.kudava.fdclient.service.LockboxShareService;
 import kakha.kudava.fdclient.service.LockboxDecryptExportService;
 import kakha.kudava.fdclient.service.LockboxOwnDevice;
 import kakha.kudava.fdclient.service.LockboxOwnDeviceService;
+import kakha.kudava.fdclient.service.LockboxRevisionService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -120,6 +121,9 @@ public final class CsePageController {
     private final LockboxDecryptExportService decryptExportService =
             new LockboxDecryptExportService();
 
+    private final LockboxRevisionService revisionService =
+            new LockboxRevisionService();
+
     private AuthService authService;
     private Path selectedFile;
     private CseEncryptionService.V3Artifacts encryptedArtifacts;
@@ -197,6 +201,8 @@ public final class CsePageController {
             private final MenuItem deleteWeb = new MenuItem("Delete from web");
             private final MenuItem share = new MenuItem("Share…");
             private final MenuItem shareWithDevice = new MenuItem("Share with my device…");
+            private final MenuItem uploadVersion = new MenuItem("Upload new version…");
+            private final MenuItem versionHistory = new MenuItem("Version history…");
             {
                 menu.setStyle("-fx-font-size: 17px; -fx-padding: 0 6 0 6;");
                 export.setOnAction(event -> exportLocalArtifacts(getTableRow().getItem()));
@@ -208,6 +214,10 @@ public final class CsePageController {
                 share.setOnAction(event -> shareFile(getTableRow().getItem(), menu));
                 shareWithDevice.setOnAction(event ->
                         shareFileWithOwnDevice(getTableRow().getItem(), menu));
+                uploadVersion.setOnAction(event ->
+                        uploadNewVersion(getTableRow().getItem(), menu));
+                versionHistory.setOnAction(event ->
+                        showVersionHistory(getTableRow().getItem(), menu));
             }
 
             @Override
@@ -234,6 +244,11 @@ public final class CsePageController {
                 }
                 if (file != null && file.accessKind() == LockboxMetadataService.AccessKind.OWNED
                         && file.serverId() != null) {
+                    menu.getItems().add(versionHistory);
+                }
+                if (file != null && file.accessKind() == LockboxMetadataService.AccessKind.OWNED
+                        && file.serverId() != null && file.localContainerPath() != null) {
+                    menu.getItems().add(uploadVersion);
                     menu.getItems().add(deleteWeb);
                 }
                 if (file != null && file.accessKind() == LockboxMetadataService.AccessKind.OWNED
@@ -1225,6 +1240,199 @@ public final class CsePageController {
             showUploadSuccess(result);
         }));
     }
+
+    private void uploadNewVersion(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null || file.serverId() == null || file.localContainerPath() == null
+                || file.accessKind() != LockboxMetadataService.AccessKind.OWNED) return;
+        if (isUploadRunning()) {
+            showError("Another Lockbox upload is already running.");
+            return;
+        }
+        if (authService == null || !authService.isAuthenticated()) {
+            showError("Your session is not authenticated. Log in again.");
+            return;
+        }
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Select replacement for " + file.filename());
+        File replacement = chooser.showOpenDialog(lockboxFileTable.getScene().getWindow());
+        if (replacement == null) return;
+
+        Path previousManifest = file.localContainerPath().getParent()
+                .resolve(file.clientFileId() + ".fdmanifest");
+        menu.setDisable(true);
+        cseProgressBar.setProgress(0);
+        Task<CseEncryptionService.V3Artifacts> encryption = new Task<>() {
+            @Override protected CseEncryptionService.V3Artifacts call() {
+                return encryptionService.encryptRevision(
+                        replacement.toPath(), file.clientFileId(), file.revision(),
+                        previousManifest, file.createdAt());
+            }
+        };
+        startProgressPolling();
+        encryption.setOnFailed(event -> {
+            stopProgressPolling();
+            menu.setDisable(false);
+            cseProgressBar.setProgress(0);
+            showError(messageOf(encryption.getException(),
+                    "The new Lockbox version could not be encrypted."));
+        });
+        encryption.setOnSucceeded(event -> {
+            stopProgressPolling();
+            CseEncryptionService.V3Artifacts staged = encryption.getValue();
+            uploadCancelledByUser = false;
+            showCancelButton();
+            CompletableFuture<LockboxUploadService.UploadResult> upload =
+                    uploadService.uploadRevision(
+                            file.serverId(), file.revision(), staged,
+                            authService.getAccessToken(),
+                            progress -> Platform.runLater(
+                                    () -> cseProgressBar.setProgress(progress)));
+            activeUpload = upload;
+            upload.whenComplete((result, error) -> Platform.runLater(() -> {
+                if (activeUpload != upload) return;
+                activeUpload = null;
+                hideCancelButton();
+                menu.setDisable(false);
+                if (error != null) {
+                    encryptionService.discardRevision(staged);
+                    cseProgressBar.setProgress(0);
+                    if (uploadCancelledByUser || upload.isCancelled()) {
+                        showUploadCancelled();
+                    } else {
+                        showError(messageOf(error,
+                                "The new Lockbox version could not be uploaded."));
+                    }
+                    return;
+                }
+                try {
+                    encryptionService.commitRevision(staged);
+                } catch (RuntimeException commitError) {
+                    cseProgressBar.setProgress(0);
+                    showError(messageOf(commitError,
+                            "Version uploaded, but its local copy could not be installed. Refresh and download it."));
+                    loadPrivateFileNames();
+                    return;
+                }
+                cseProgressBar.setProgress(1);
+                loadPrivateFileNames();
+                Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                alert.setTitle("Version uploaded");
+                alert.setHeaderText("Version " + result.revision() + " is now current.");
+                alert.setContentText("Earlier versions remain available in Version history. "
+                        + "Existing shares still point to their original version.");
+                alert.showAndWait();
+            }));
+        });
+        Thread worker = new Thread(encryption, "cse-revision-encryption-worker");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void showVersionHistory(
+            LockboxMetadataService.PrivateFile file,
+            MenuButton menu
+    ) {
+        if (file == null || file.serverId() == null
+                || file.accessKind() != LockboxMetadataService.AccessKind.OWNED) return;
+        if (authService == null || !authService.isAuthenticated()) {
+            showError("Your session is not authenticated. Log in again.");
+            return;
+        }
+        menu.setDisable(true);
+        cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        revisionService.history(file.serverId(), authService.getAccessToken())
+                .whenComplete((history, error) -> Platform.runLater(() -> {
+                    menu.setDisable(false);
+                    cseProgressBar.setProgress(error == null ? 0 : 0);
+                    if (error != null) {
+                        showError(messageOf(error, "The version history could not be loaded."));
+                        return;
+                    }
+                    if (!history.clientFileId().equals(file.clientFileId())) {
+                        showError("The server returned version history for another file.");
+                        return;
+                    }
+                    ChoiceDialog<LockboxRevisionService.Revision> dialog =
+                            new ChoiceDialog<>(history.revisions().getFirst(), history.revisions());
+                    dialog.setTitle("Version history");
+                    dialog.setHeaderText(file.filename() + " — " + history.revisions().size()
+                            + (history.revisions().size() == 1 ? " version" : " versions"));
+                    dialog.setContentText("Select a version to decrypt and export:");
+                    Window owner = lockboxFileTable.getScene().getWindow();
+                    if (owner != null) dialog.initOwner(owner);
+                    dialog.showAndWait().ifPresent(revision ->
+                            exportHistoricalRevision(file, revision, menu));
+                }));
+    }
+
+    private void exportHistoricalRevision(
+            LockboxMetadataService.PrivateFile file,
+            LockboxRevisionService.Revision revision,
+            MenuButton menu
+    ) {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Decrypt and export version " + revision.revision());
+        chooser.setInitialFileName(file.filename());
+        File selected = chooser.showSaveDialog(lockboxFileTable.getScene().getWindow());
+        if (selected == null) return;
+        Path destination = selected.toPath().toAbsolutePath().normalize();
+        if (Files.exists(destination)) {
+            showError("The selected destination already exists. Choose a new filename.");
+            return;
+        }
+
+        menu.setDisable(true);
+        cseProgressBar.setProgress(0);
+        AtomicBoolean cancellation = new AtomicBoolean();
+        CompletableFuture<Void> operation = downloadService.downloadRevision(
+                        file, revision.revision(), authService.getAccessToken(),
+                        progress -> Platform.runLater(() -> cseProgressBar.setProgress(progress)),
+                        cancellation::get)
+                .thenCompose(downloaded -> decryptExportService
+                        .decryptAndExport(downloaded, destination)
+                        .whenComplete((ignored, error) -> deleteTemporaryRevision(downloaded)));
+        activeDownload = operation;
+        activeDownloadCancellation = cancellation;
+        showCancelButton();
+        operation.whenComplete((ignored, error) -> Platform.runLater(() -> {
+            if (activeDownload == operation) {
+                activeDownload = null;
+                activeDownloadCancellation = null;
+                hideCancelButton();
+            }
+            menu.setDisable(false);
+            if (error != null) {
+                cseProgressBar.setProgress(0);
+                if (!causedBy(error, CancellationException.class)) {
+                    showError(messageOf(error, "The selected Lockbox version could not be exported."));
+                }
+                return;
+            }
+            cseProgressBar.setProgress(1);
+            Alert alert = new Alert(Alert.AlertType.INFORMATION);
+            alert.setTitle("Version exported");
+            alert.setHeaderText("Version " + revision.revision() + " was decrypted and exported.");
+            alert.setContentText(destination.toString());
+            alert.showAndWait();
+        }));
+    }
+
+    private void deleteTemporaryRevision(LockboxMetadataService.PrivateFile downloaded) {
+        if (downloaded == null || downloaded.localContainerPath() == null) return;
+        Path directory = downloaded.localContainerPath().getParent();
+        if (directory == null || !directory.getFileName().toString()
+                .startsWith("fdclient-lockbox-revision-")) return;
+        try (var paths = Files.walk(directory)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                try { Files.deleteIfExists(path); } catch (IOException ignored) {}
+            });
+        } catch (IOException ignored) {}
+    }
+
 
     private void deleteLocalArtifacts(
             LockboxMetadataService.PrivateFile file,

@@ -72,6 +72,19 @@ public final class NativeCryptoBridge {
             long modifiedAtUnixMillis
     );
 
+    public static native String encryptFileRevisionV3(
+            String inputPath,
+            String outputDirectory,
+            String originalFileName,
+            String mimeType,
+            byte[] deviceId,
+            long createdAtUnixMillis,
+            long modifiedAtUnixMillis,
+            byte[] clientFileId,
+            long revision,
+            byte[] previousManifestHash
+    );
+
     public static native String decryptPrivateMetadataV3(
             byte[] manifest,
             byte[] signature,

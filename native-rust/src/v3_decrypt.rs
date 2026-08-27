@@ -169,7 +169,7 @@ mod tests {
                 output_directory: directory.clone(),
                 original_file_name: "private.bin".into(),
                 mime_type: "application/octet-stream".into(),
-                device_id: [0x55; 16], revision: 1,
+                device_id: [0x55; 16], client_file_id: None, revision: 1,
                 previous_manifest_hash: [0; 64],
                 created_at_unix_millis: 1, modified_at_unix_millis: 2,
             },

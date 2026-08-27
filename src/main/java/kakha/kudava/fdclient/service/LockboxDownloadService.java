@@ -70,6 +70,49 @@ public final class LockboxDownloadService {
                         progressListener, cancellationRequested));
     }
 
+    /**
+     * Downloads an owned historical revision into an isolated temporary directory.
+     * The caller owns the returned directory and must remove it after use.
+     */
+    public CompletableFuture<LockboxMetadataService.PrivateFile> downloadRevision(
+            LockboxMetadataService.PrivateFile currentFile,
+            long revision,
+            String accessToken,
+            DoubleConsumer progressListener,
+            BooleanSupplier cancellationRequested
+    ) {
+        if (currentFile == null || currentFile.serverId() == null
+                || currentFile.accessKind() != LockboxMetadataService.AccessKind.OWNED
+                || revision < 1 || revision > currentFile.revision()) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("A valid owned Lockbox revision is required."));
+        }
+        return CompletableFuture.supplyAsync(() -> {
+            Path directory = null;
+            try {
+                directory = Files.createTempDirectory("fdclient-lockbox-revision-");
+                LockboxMetadataService.PrivateFile selected = new LockboxMetadataService.PrivateFile(
+                        currentFile.serverId(), currentFile.clientFileId(), revision,
+                        currentFile.filename(), currentFile.mimeType(), currentFile.plaintextSize(),
+                        currentFile.createdAt(), currentFile.modifiedAt(),
+                        LockboxMetadataService.Location.LOCAL,
+                        directory.resolve(currentFile.clientFileId() + ".fdcse"),
+                        LockboxMetadataService.AccessKind.OWNED, null, null, null);
+                String endpoint = "/api/lockbox/files/" + currentFile.serverId()
+                        + "/revisions/" + revision + "/";
+                downloadOwnedTo(selected, accessToken, directory, endpoint,
+                        progressListener, cancellationRequested);
+                return selected;
+            } catch (RuntimeException error) {
+                deleteTreeQuietly(directory);
+                throw error;
+            } catch (Exception error) {
+                deleteTreeQuietly(directory);
+                throw new IllegalStateException("Historical revision download failed.", error);
+            }
+        });
+    }
+
     private void downloadBlocking(
             LockboxMetadataService.PrivateFile file,
             String token,
@@ -90,6 +133,19 @@ public final class LockboxDownloadService {
         }
 
         Path directory = new CseEncryptionService().artifactDirectory();
+        downloadOwnedTo(file, token, directory,
+                "/api/lockbox/files/" + file.serverId() + "/",
+                progressListener, cancellationRequested);
+    }
+
+    private void downloadOwnedTo(
+            LockboxMetadataService.PrivateFile file,
+            String token,
+            Path directory,
+            String endpoint,
+            DoubleConsumer progressListener,
+            BooleanSupplier cancellationRequested
+    ) {
         String base = file.clientFileId().toString();
         Path manifestFinal = directory.resolve(base + ".fdmanifest");
         Path signatureFinal = directory.resolve(base + ".fdsig");
@@ -107,8 +163,8 @@ public final class LockboxDownloadService {
         Path containerPart = directory.resolve(base + ".fdcse" + attempt);
         List<Path> parts = List.of(containerPart, manifestPart, signaturePart);
         try {
-            byte[] manifest = getBytes(file.serverId(), "manifest", token, MANIFEST_LENGTH);
-            byte[] signature = getBytes(file.serverId(), "signature", token, SIGNATURE_LENGTH);
+            byte[] manifest = getBytes(endpoint, "manifest", token, MANIFEST_LENGTH);
+            byte[] signature = getBytes(endpoint, "signature", token, SIGNATURE_LENGTH);
             Files.write(manifestPart, manifest);
             Files.write(signaturePart, signature);
 
@@ -121,7 +177,7 @@ public final class LockboxDownloadService {
             }
             progressListener.accept(0);
             MessageDigest digest = MessageDigest.getInstance("SHA3-512");
-            HttpResponse<InputStream> response = send(file.serverId(), "container", token,
+            HttpResponse<InputStream> response = send(endpoint, "container", token,
                     HttpResponse.BodyHandlers.ofInputStream());
             requireSuccess(response.statusCode());
             long received = 0;
@@ -293,8 +349,8 @@ public final class LockboxDownloadService {
         return JSON.writeValueAsString(root);
     }
 
-    private byte[] getBytes(long id, String artifact, String token, int expected) throws Exception {
-        HttpResponse<byte[]> response = send(id, artifact, token, HttpResponse.BodyHandlers.ofByteArray());
+    private byte[] getBytes(String endpoint, String artifact, String token, int expected) throws Exception {
+        HttpResponse<byte[]> response = send(endpoint, artifact, token, HttpResponse.BodyHandlers.ofByteArray());
         requireSuccess(response.statusCode());
         if (response.body().length != expected) {
             throw new IllegalStateException("Invalid downloaded " + artifact + " length.");
@@ -302,15 +358,24 @@ public final class LockboxDownloadService {
         return response.body();
     }
 
-    private <T> HttpResponse<T> send(long id, String artifact, String token,
+    private <T> HttpResponse<T> send(String endpoint, String artifact, String token,
                                      HttpResponse.BodyHandler<T> handler) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(
-                        URI.create(BASE + Long.toString(id) + "/" + artifact))
+                        BackendConfig.uri(endpoint + artifact))
                 .timeout(Duration.ofHours(12))
                 .header("Authorization", "Bearer " + token)
                 .header("Accept", "application/octet-stream")
                 .GET().build();
         return http.send(request, handler);
+    }
+
+    private static void deleteTreeQuietly(Path directory) {
+        if (directory == null) return;
+        try (var paths = Files.walk(directory)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                try { Files.deleteIfExists(path); } catch (Exception ignored) {}
+            });
+        } catch (Exception ignored) {}
     }
 
     private void requireSuccess(int status) {

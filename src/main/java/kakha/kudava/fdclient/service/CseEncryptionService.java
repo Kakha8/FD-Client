@@ -9,12 +9,15 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.UUID;
+import java.security.MessageDigest;
 
 public final class CseEncryptionService {
 
@@ -45,6 +48,51 @@ public final class CseEncryptionService {
             throw e;
         } catch (Exception e) {
             throw new CseEncryptionException("CSEMLK03 file encryption failed.", e);
+        }
+    }
+
+    public V3Artifacts encryptRevision(
+            Path inputFile,
+            UUID clientFileId,
+            long currentRevision,
+            Path previousManifest,
+            Instant logicalCreatedAt
+    ) {
+        Objects.requireNonNull(inputFile, "inputFile");
+        Objects.requireNonNull(clientFileId, "clientFileId");
+        Objects.requireNonNull(previousManifest, "previousManifest");
+        Objects.requireNonNull(logicalCreatedAt, "logicalCreatedAt");
+        if (currentRevision < 1 || currentRevision == Long.MAX_VALUE) {
+            throw new CseEncryptionException("The current Lockbox revision is invalid.");
+        }
+        Path input = inputFile.toAbsolutePath().normalize();
+        Path manifest = previousManifest.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(input) || !Files.isRegularFile(manifest)) {
+            throw new CseEncryptionException("The replacement file or previous manifest is unavailable.");
+        }
+
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(input, BasicFileAttributes.class);
+            String mimeType = Files.probeContentType(input);
+            if (mimeType == null || mimeType.isBlank()) mimeType = "application/octet-stream";
+            Path staging = Files.createTempDirectory(artifactDirectory(), ".revision-");
+            byte[] previousHash = MessageDigest.getInstance("SHA3-512")
+                    .digest(Files.readAllBytes(manifest));
+            String response = NativeCryptoBridge.encryptFileRevisionV3(
+                    input.toString(), staging.toString(), input.getFileName().toString(), mimeType,
+                    uuidBytes(LockboxDeviceIdentity.loadOrCreate()), logicalCreatedAt.toEpochMilli(),
+                    attributes.lastModifiedTime().toMillis(), uuidBytes(clientFileId),
+                    currentRevision + 1, previousHash);
+            V3Artifacts artifacts = validateResponse(response, staging);
+            if (!clientFileId.equals(artifacts.clientFileId())
+                    || artifacts.revision() != currentRevision + 1) {
+                throw new CseEncryptionException("Native encryption returned the wrong revision identity.");
+            }
+            return artifacts;
+        } catch (CseEncryptionException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new CseEncryptionException("CSEMLK03 revision encryption failed.", error);
         }
     }
 
@@ -123,6 +171,48 @@ public final class CseEncryptionService {
             throw error;
         } catch (Exception error) {
             throw new CseEncryptionException("Could not load the local Lockbox artifacts.", error);
+        }
+    }
+
+    public void commitRevision(V3Artifacts staged) {
+        Objects.requireNonNull(staged, "staged");
+        Path destination = artifactDirectory();
+        Path staging = staged.containerPath().toAbsolutePath().normalize().getParent();
+        if (staging == null || !staging.getParent().equals(destination)
+                || !staging.getFileName().toString().startsWith(".revision-")) {
+            throw new CseEncryptionException("The staged revision directory is invalid.");
+        }
+        try {
+            moveReplacing(staged.containerPath(), destination.resolve(staged.clientFileId() + ".fdcse"));
+            moveReplacing(staged.manifestPath(), destination.resolve(staged.clientFileId() + ".fdmanifest"));
+            moveReplacing(staged.signaturePath(), destination.resolve(staged.clientFileId() + ".fdsig"));
+            Files.deleteIfExists(staging);
+        } catch (Exception error) {
+            throw new CseEncryptionException(
+                    "The new revision was accepted by the server, but its local artifacts could not be installed.",
+                    error);
+        }
+    }
+
+    public void discardRevision(V3Artifacts staged) {
+        if (staged == null || staged.containerPath() == null) return;
+        Path staging = staged.containerPath().toAbsolutePath().normalize().getParent();
+        Path destination = artifactDirectory();
+        if (staging == null || !destination.equals(staging.getParent())
+                || !staging.getFileName().toString().startsWith(".revision-")) return;
+        try (var paths = Files.walk(staging)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                try { Files.deleteIfExists(path); } catch (IOException ignored) {}
+            });
+        } catch (IOException ignored) {}
+    }
+
+    private static void moveReplacing(Path source, Path destination) throws IOException {
+        try {
+            Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 

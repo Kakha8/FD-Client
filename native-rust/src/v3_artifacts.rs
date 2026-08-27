@@ -21,6 +21,9 @@ pub struct EncryptV3Request {
     pub original_file_name: String,
     pub mime_type: String,
     pub device_id: [u8; 16],
+    /// `None` creates a new logical file. Revisions must supply the stable
+    /// logical file identifier from the previous manifest.
+    pub client_file_id: Option<[u8; 16]>,
     pub revision: u64,
     pub previous_manifest_hash: [u8; 64],
     pub created_at_unix_millis: i64,
@@ -84,7 +87,10 @@ pub fn encrypt_file_v3(
 
     let exact_plaintext_size = input_metadata.len();
     let chunk_count = content_crypto::chunk_count(exact_plaintext_size)?;
-    let client_file_id = random_uuid_bytes()?;
+    let client_file_id = match request.client_file_id {
+        Some(id) => id,
+        None => random_uuid_bytes()?,
+    };
     let basename = format_uuid(&client_file_id);
     let paths = ArtifactPaths::new(&request.output_directory, &basename);
     paths.reject_existing()?;
@@ -295,6 +301,40 @@ mod tests {
     use ml_kem::{MlKem1024, kem::Kem};
 
     #[test]
+    fn revision_reuses_logical_id_and_chains_previous_manifest() {
+        let directory = std::env::temp_dir().join(format!(
+            "fd-v3-revision-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()));
+        fs::create_dir_all(&directory).unwrap();
+        let input = directory.join("replacement.txt");
+        fs::write(&input, b"revision two").unwrap();
+        let (_, encryption_public_key) = MlKem1024::generate_keypair();
+        let signing = mldsa::generate_mldsa87_keypair();
+        let logical_id = [0x42; 16];
+        let previous_hash = [0x24; 64];
+        let artifacts = encrypt_file_v3(
+            &EncryptV3Request {
+                input_path: input, output_directory: directory.clone(),
+                original_file_name: "replacement.txt".into(), mime_type: "text/plain".into(),
+                device_id: [0x77; 16], client_file_id: Some(logical_id), revision: 2,
+                previous_manifest_hash: previous_hash, created_at_unix_millis: 1,
+                modified_at_unix_millis: 2,
+            },
+            &V3EncryptionKeys {
+                encryption_public_key: &encryption_public_key,
+                signing_private_seed: signing.private_seed(), signing_public_key: signing.public_key(),
+            },
+        ).unwrap();
+        let manifest = Manifest::parse(&fs::read(&artifacts.manifest_path).unwrap()).unwrap();
+        assert_eq!(artifacts.client_file_id, logical_id);
+        assert_eq!(manifest.client_file_id, logical_id);
+        assert_eq!(manifest.revision, 2);
+        assert_eq!(manifest.previous_manifest_hash, previous_hash);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn complete_artifacts_verify_and_decrypt_to_original() {
         let test_id = format!("{}-{}", std::process::id(), random_uuid_bytes().unwrap()[0]);
         let directory = std::env::temp_dir().join(format!("fd-v3-artifacts-{test_id}"));
@@ -310,7 +350,8 @@ mod tests {
             &EncryptV3Request {
                 input_path: input_path.clone(), output_directory: directory.clone(),
                 original_file_name: "very-secret-original-name.txt".into(),
-                mime_type: "text/plain".into(), device_id: [0x77; 16], revision: 1,
+                mime_type: "text/plain".into(), device_id: [0x77; 16], client_file_id: None,
+                revision: 1,
                 previous_manifest_hash: [0; 64], created_at_unix_millis: 1_700_000_000_000,
                 modified_at_unix_millis: 1_700_000_001_000,
             },
@@ -388,7 +429,8 @@ mod tests {
         let result = encrypt_file_v3(
             &EncryptV3Request { input_path: input, output_directory: directory.clone(),
                 original_file_name: "../unsafe.txt".into(), mime_type: "text/plain".into(),
-                device_id: [0; 16], revision: 1, previous_manifest_hash: [0; 64],
+                device_id: [0; 16], client_file_id: None, revision: 1,
+                previous_manifest_hash: [0; 64],
                 created_at_unix_millis: 1, modified_at_unix_millis: 1 },
             &V3EncryptionKeys { encryption_public_key: &encryption_public_key,
                 signing_private_seed: signing.private_seed(), signing_public_key: signing.public_key() },

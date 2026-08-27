@@ -136,6 +136,57 @@ public final class LockboxUploadService {
                 .thenApply(response -> handleResponse(response, artifacts));
     }
 
+    public CompletableFuture<UploadResult> uploadRevision(
+            long fileId,
+            long expectedRevision,
+            CseEncryptionService.V3Artifacts artifacts,
+            String accessToken,
+            DoubleConsumer progressListener
+    ) {
+        if (fileId < 1 || expectedRevision < 1
+                || artifacts == null || artifacts.revision() != expectedRevision + 1) {
+            return CompletableFuture.failedFuture(
+                    new UploadException("The Lockbox revision request is invalid."));
+        }
+        Objects.requireNonNull(progressListener, "progressListener");
+        if (!validArtifactSet(artifacts)) {
+            return CompletableFuture.failedFuture(
+                    new UploadException("The complete revision artifact set is unavailable."));
+        }
+        if (accessToken == null || accessToken.isBlank()) {
+            return CompletableFuture.failedFuture(
+                    new UploadException("No authenticated session is available."));
+        }
+
+        String boundary = "----FDClientBoundary" + UUID.randomUUID();
+        final HttpRequest.BodyPublisher multipartBody;
+        try {
+            multipartBody = createMultipartBody(artifacts, boundary);
+        } catch (Exception error) {
+            return CompletableFuture.failedFuture(
+                    new UploadException("Could not prepare the revision upload.", error));
+        }
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(BackendConfig.uri("/api/lockbox/files/" + fileId
+                        + "/revisions?expectedRevision=" + expectedRevision))
+                .timeout(UPLOAD_TIMEOUT)
+                .header("Authorization", "Bearer " + accessToken)
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .header("Accept", "application/json")
+                .PUT(new ProgressBodyPublisher(multipartBody, progressListener))
+                .build();
+        progressListener.accept(0.0);
+        return httpClient.sendAsync(request,
+                        HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                .thenApply(response -> {
+                    if (response.statusCode() == 409) {
+                        throw new UploadException(
+                                "This file changed on another device. Refresh and try again.");
+                    }
+                    return handleResponse(response, artifacts);
+                });
+    }
+
     private HttpRequest.BodyPublisher createMultipartBody(
             CseEncryptionService.V3Artifacts artifacts,
             String boundary

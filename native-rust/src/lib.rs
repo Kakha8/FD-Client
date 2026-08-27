@@ -432,7 +432,7 @@ pub fn encrypt_file_v3_jni<'local>(
             let artifacts = v3_artifacts::encrypt_file_v3(
                 &v3_artifacts::EncryptV3Request {
                     input_path: input_path.into(), output_directory: output_directory.into(),
-                    original_file_name, mime_type, device_id, revision: 1,
+                    original_file_name, mime_type, device_id, client_file_id: None, revision: 1,
                     previous_manifest_hash: [0; 64], created_at_unix_millis: created_at,
                     modified_at_unix_millis: modified_at,
                 },
@@ -460,6 +460,78 @@ pub fn encrypt_file_v3_jni<'local>(
                 eprintln!("CSEMLK03 encryption failed: {error}");
                 env.throw_new(JNIString::from("java/lang/IllegalStateException"),
                     JNIString::from(format!("CSEMLK03 encryption failed: {error}")))?;
+                Ok(null_mut())
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "encryptFileRevisionV3")]
+pub fn encrypt_file_revision_v3_jni<'local>(
+    mut unowned_env: EnvUnowned<'local>, _class: jclass,
+    input_path: JString<'local>, output_directory: JString<'local>,
+    original_file_name: JString<'local>, mime_type: JString<'local>,
+    device_id: JByteArray<'local>, created_at: jlong, modified_at: jlong,
+    client_file_id: JByteArray<'local>, revision: jlong,
+    previous_manifest_hash: JByteArray<'local>,
+) -> jstring {
+    unowned_env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let result = (|| -> Result<String, String> {
+            if revision <= 1 {
+                return Err("revision must be greater than 1".into());
+            }
+            let input_path = input_path.try_to_string(env).map_err(|e| e.to_string())?;
+            let output_directory = output_directory.try_to_string(env).map_err(|e| e.to_string())?;
+            let original_file_name = original_file_name.try_to_string(env).map_err(|e| e.to_string())?;
+            let mime_type = mime_type.try_to_string(env).map_err(|e| e.to_string())?;
+            let device_id: [u8; 16] = env.convert_byte_array(&device_id)
+                .map_err(|e| e.to_string())?.try_into()
+                .map_err(|_| "device ID must contain exactly 16 bytes".to_string())?;
+            let client_file_id: [u8; 16] = env.convert_byte_array(&client_file_id)
+                .map_err(|e| e.to_string())?.try_into()
+                .map_err(|_| "client file ID must contain exactly 16 bytes".to_string())?;
+            let previous_manifest_hash: [u8; 64] = env.convert_byte_array(&previous_manifest_hash)
+                .map_err(|e| e.to_string())?.try_into()
+                .map_err(|_| "previous manifest hash must contain exactly 64 bytes".to_string())?;
+            if previous_manifest_hash.iter().all(|byte| *byte == 0) {
+                return Err("previous manifest hash must not be zero".into());
+            }
+            let encryption_key = mlkem_keystore::load_stored_ml_kem1024_encapsulation_key()
+                .map_err(|e| e.to_string())?;
+            let signing_key = mldsa_keystore::load_stored_signing_key()
+                .map_err(|e| e.to_string())?;
+            let artifacts = v3_artifacts::encrypt_file_v3(
+                &v3_artifacts::EncryptV3Request {
+                    input_path: input_path.into(), output_directory: output_directory.into(),
+                    original_file_name, mime_type, device_id,
+                    client_file_id: Some(client_file_id), revision: revision as u64,
+                    previous_manifest_hash, created_at_unix_millis: created_at,
+                    modified_at_unix_millis: modified_at,
+                },
+                &v3_artifacts::V3EncryptionKeys {
+                    encryption_public_key: &encryption_key,
+                    signing_private_seed: signing_key.private_seed(),
+                    signing_public_key: signing_key.public_key(),
+                },
+            ).map_err(|e| e.to_string())?;
+            serde_json::to_string(&V3ArtifactsJson {
+                client_file_id: v3_artifacts::format_uuid_public(&artifacts.client_file_id),
+                container_path: artifacts.container_path.to_string_lossy().into_owned(),
+                manifest_path: artifacts.manifest_path.to_string_lossy().into_owned(),
+                signature_path: artifacts.signature_path.to_string_lossy().into_owned(),
+                container_hash: bytes_to_hex(&artifacts.container_hash).to_lowercase(),
+                container_size: artifacts.container_size,
+                encryption_key_id: bytes_to_hex(&artifacts.encryption_key_id).to_lowercase(),
+                signing_key_id: bytes_to_hex(&artifacts.signing_key_id).to_lowercase(),
+                revision: artifacts.revision,
+            }).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(json) => Ok(env.new_string(json)?.into_raw()),
+            Err(error) => {
+                eprintln!("CSEMLK03 revision encryption failed: {error}");
+                env.throw_new(JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("CSEMLK03 revision encryption failed: {error}")))?;
                 Ok(null_mut())
             }
         }

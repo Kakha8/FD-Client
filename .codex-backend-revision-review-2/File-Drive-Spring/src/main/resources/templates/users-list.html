@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8" />
+    <title>Users</title>
+</head>
+<body>
+<h1>Users</h1>
+
+<table id="usersTable" border="1" cellpadding="6">
+    <thead>
+    <tr>
+        <th>User</th>
+        <th>Connected</th>
+    </tr>
+    </thead>
+    <tbody id="usersTbody">
+    <tr><td colspan="2">Loading…</td></tr>
+    </tbody>
+</table>
+<p th:text="${message}"></p>
+
+<script th:inline="javascript">
+    const userRole = /*[[${userRole}]]*/ "client"; // fallback client
+</script>
+
+<script defer th:src="@{/js/users-list.js}"></script>
+</body>
+</html>
