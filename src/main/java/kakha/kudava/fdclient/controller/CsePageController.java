@@ -41,6 +41,7 @@ import kakha.kudava.fdclient.service.LockboxDecryptExportService;
 import kakha.kudava.fdclient.service.LockboxOwnDevice;
 import kakha.kudava.fdclient.service.LockboxOwnDeviceService;
 import kakha.kudava.fdclient.service.LockboxRevisionService;
+import kakha.kudava.fdclient.service.LockboxPreviousShareService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -123,6 +124,9 @@ public final class CsePageController {
 
     private final LockboxRevisionService revisionService =
             new LockboxRevisionService();
+
+    private final LockboxPreviousShareService previousShareService =
+            new LockboxPreviousShareService();
 
     private AuthService authService;
     private Path selectedFile;
@@ -1325,11 +1329,140 @@ public final class CsePageController {
                 alert.setContentText("Earlier versions remain available in Version history. "
                         + "Existing shares still point to their original version.");
                 alert.showAndWait();
+                offerShareReplication(file, result, menu);
             }));
         });
         Thread worker = new Thread(encryption, "cse-revision-encryption-worker");
         worker.setDaemon(true);
         worker.start();
+    }
+
+    private void offerShareReplication(
+            LockboxMetadataService.PrivateFile previousFile,
+            LockboxUploadService.UploadResult result,
+            MenuButton menu
+    ) {
+        menu.setDisable(true);
+        cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        previousShareService.list(previousFile.serverId(), previousFile.revision(),
+                        authService.getAccessToken())
+                .whenComplete((previousShares, lookupError) -> Platform.runLater(() -> {
+                    menu.setDisable(false);
+                    cseProgressBar.setProgress(0);
+                    if (lookupError != null) {
+                        showError(messageOf(lookupError,
+                                "Version uploaded, but previous recipients could not be loaded."));
+                        return;
+                    }
+                    if (previousShares.isEmpty()) return;
+
+                    Alert confirmation = new Alert(Alert.AlertType.CONFIRMATION);
+                    confirmation.setTitle("Share the new version?");
+                    confirmation.setHeaderText("Share version " + result.revision()
+                            + " with the same recipients?");
+                    confirmation.setContentText(previousShares.size()
+                            + (previousShares.size() == 1 ? " active share" : " active shares")
+                            + " existed on version " + previousFile.revision()
+                            + ". Fresh encrypted envelopes will be created for the new version."
+                            + " Choosing No keeps it private.");
+                    javafx.scene.control.ButtonType shareAll =
+                            new javafx.scene.control.ButtonType("Share with all");
+                    javafx.scene.control.ButtonType keepPrivate =
+                            new javafx.scene.control.ButtonType("Keep private");
+                    confirmation.getButtonTypes().setAll(shareAll, keepPrivate,
+                            javafx.scene.control.ButtonType.CANCEL);
+                    Window owner = lockboxFileTable.getScene().getWindow();
+                    if (owner != null) confirmation.initOwner(owner);
+                    if (confirmation.showAndWait().orElse(
+                            javafx.scene.control.ButtonType.CANCEL) != shareAll) return;
+
+                    LockboxMetadataService.PrivateFile revised =
+                            new LockboxMetadataService.PrivateFile(
+                                    result.id(), result.clientFileId(), result.revision(),
+                                    previousFile.filename(), previousFile.mimeType(),
+                                    previousFile.plaintextSize(), previousFile.createdAt(),
+                                    result.createdAt() == null ? previousFile.modifiedAt() : result.createdAt(),
+                                    LockboxMetadataService.Location.BOTH,
+                                    encryptionService.artifactDirectory()
+                                            .resolve(result.clientFileId() + ".fdcse"),
+                                    LockboxMetadataService.AccessKind.OWNED,
+                                    null, null, null);
+                    replicatePreviousShares(revised, previousShares, menu);
+                }));
+    }
+
+    private void replicatePreviousShares(
+            LockboxMetadataService.PrivateFile revised,
+            List<LockboxPreviousShareService.PreviousShare> shares,
+            MenuButton menu
+    ) {
+        menu.setDisable(true);
+        cseProgressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
+        boolean needsDevices = shares.stream()
+                .anyMatch(LockboxPreviousShareService.PreviousShare::deviceTargeted);
+        CompletableFuture<List<LockboxOwnDevice>> devices;
+        if (needsDevices) {
+            devices = new LockboxOwnDeviceService(authService)
+                    .listOtherDevices(LockboxDeviceIdentity.loadOrCreate());
+        } else {
+            devices = CompletableFuture.completedFuture(List.of());
+        }
+        devices.thenCompose(available -> replicateSequentially(
+                        revised, shares, available, 0, new ArrayList<>()))
+                .whenComplete((failures, error) -> Platform.runLater(() -> {
+                    menu.setDisable(false);
+                    cseProgressBar.setProgress(error == null && failures.isEmpty() ? 1 : 0);
+                    if (error != null) {
+                        showError(messageOf(error,
+                                "The new version was uploaded, but its shares could not be recreated."));
+                        return;
+                    }
+                    if (!failures.isEmpty()) {
+                        showError("The new version was shared with "
+                                + (shares.size() - failures.size()) + " of " + shares.size()
+                                + " recipients. Failed: " + String.join(", ", failures));
+                        return;
+                    }
+                    Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                    alert.setTitle("Shares updated");
+                    alert.setHeaderText("The new version was shared successfully.");
+                    alert.setContentText("Created " + shares.size()
+                            + (shares.size() == 1 ? " fresh share envelope." : " fresh share envelopes."));
+                    alert.showAndWait();
+                }));
+    }
+
+    private CompletableFuture<List<String>> replicateSequentially(
+            LockboxMetadataService.PrivateFile revised,
+            List<LockboxPreviousShareService.PreviousShare> shares,
+            List<LockboxOwnDevice> devices,
+            int index,
+            List<String> failures
+    ) {
+        if (index >= shares.size()) return CompletableFuture.completedFuture(failures);
+        LockboxPreviousShareService.PreviousShare previous = shares.get(index);
+        CompletableFuture<LockboxShareService.ShareResult> attempt;
+        LockboxShareService sharing = new LockboxShareService(authService);
+        if (previous.deviceTargeted()) {
+            LockboxOwnDevice target = devices.stream()
+                    .filter(device -> device.deviceId().equals(previous.targetDeviceId()))
+                    .findFirst().orElse(null);
+            if (target == null) {
+                failures.add(previous.recipientUsername() + " (device unavailable)");
+                return replicateSequentially(revised, shares, devices, index + 1, failures);
+            }
+            attempt = sharing.shareWithOwnDevice(
+                    revised, target, previous.expiresAtUnixSeconds());
+        } else {
+            attempt = sharing.share(revised, previous.recipientUsername(),
+                    previous.expiresAtUnixSeconds());
+        }
+        return attempt.handle((ignored, error) -> {
+                    if (error != null) failures.add(previous.recipientUsername());
+                    return failures;
+                })
+                .thenCompose(current -> replicateSequentially(
+                        revised, shares, devices, index + 1, current));
     }
 
     private void showVersionHistory(
