@@ -34,6 +34,32 @@ public class LoginPageController {
     private final AuthService authService = new AuthService();
 
     @FXML
+    private void initialize() {
+        setLoginControlsDisabled(true);
+        errorLabel.setText("Restoring your session...");
+
+        authService.restoreSession()
+                .whenComplete((restored, error) ->
+                        Platform.runLater(() -> {
+                            if (error != null) {
+                                setLoginControlsDisabled(false);
+                                showError(getErrorMessage(error));
+                                return;
+                            }
+
+                            if (Boolean.TRUE.equals(restored)) {
+                                openMainPage();
+                                return;
+                            }
+
+                            setLoginControlsDisabled(false);
+                            errorLabel.setText("");
+                            usernameField.requestFocus();
+                        })
+                );
+    }
+
+    @FXML
     private void onLogin(ActionEvent event) {
         String username = usernameField.getText().trim();
         String password = passwordField.getText();
@@ -80,6 +106,12 @@ public class LoginPageController {
         errorLabel.setText(message);
     }
 
+    private void setLoginControlsDisabled(boolean disabled) {
+        loginButton.setDisable(disabled);
+        usernameField.setDisable(disabled);
+        passwordField.setDisable(disabled);
+    }
+
     private void openMainPage() {
         try {
             FXMLLoader loader = new FXMLLoader(
@@ -109,6 +141,11 @@ public class LoginPageController {
             currentScene.setRoot(mainPageRoot);
 
             stage.setTitle("FD Client");
+            // Use an explicit size because the original Scene was created with
+            // the smaller login-page dimensions and can otherwise clip this
+            // layout on displays using DPI scaling.
+            stage.setWidth(850);
+            stage.setHeight(600);
             stage.centerOnScreen();
 
         } catch (IOException exception) {
