@@ -15,13 +15,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 public final class AuthService {
 
     private static final URI AUTH_URI =
-            URI.create("https://localhost:8443/api/auth/");
+            BackendConfig.uri("/api/auth/");
 
     private static final URI LOGIN_URI =
             AUTH_URI.resolve("login");
@@ -55,6 +56,9 @@ public final class AuthService {
      * Access tokens are intentionally kept only in memory.
      */
     private volatile String accessToken;
+    private volatile Long userId;
+    private volatile String username;
+    private volatile UUID publicUuid;
 
     public CompletableFuture<String> login(
             String username,
@@ -80,6 +84,10 @@ public final class AuthService {
          */
         cookieManager.getCookieStore().removeAll();
         accessToken = null;
+        userId = null;
+        this.username = null;
+        publicUuid = null;
+        LockboxAccountContext.clear();
 
         final String requestBody;
 
@@ -117,11 +125,22 @@ public final class AuthService {
                         objectMapper.readTree(response.body());
 
                 String newAccessToken =
-                        json.path("accessToken").asText();
+                        json.path("accessToken").asText("");
 
-                if (newAccessToken.isBlank()) {
+                long newUserId =
+                        json.path("userId").asLong(-1);
+
+                String newUsername =
+                        json.path("username").asText("");
+
+                UUID newPublicUuid =
+                        parsePublicUuid(
+                                json.path("publicUuid").asText("")
+                        );
+
+                if (newAccessToken.isBlank() || newUserId < 1 || newUsername.isBlank()) {
                     throw new AuthException(
-                            "The server did not return an access token."
+                            "The server did not return a complete account session."
                     );
                 }
 
@@ -133,6 +152,10 @@ public final class AuthService {
                  */
                 saveRefreshTokenFromCookieStore();
 
+                LockboxAccountContext.activate(newUserId);
+                userId = newUserId;
+                username = newUsername;
+                publicUuid = newPublicUuid;
                 accessToken = newAccessToken;
                 return newAccessToken;
             } catch (AuthException exception) {
@@ -210,11 +233,22 @@ public final class AuthService {
                         objectMapper.readTree(response.body());
 
                 String newAccessToken =
-                        json.path("accessToken").asText();
+                        json.path("accessToken").asText("");
 
-                if (newAccessToken.isBlank()) {
+                long refreshedUserId =
+                        json.path("userId").asLong(-1);
+
+                String refreshedUsername =
+                        json.path("username").asText("");
+
+                UUID refreshedPublicUuid =
+                        parsePublicUuid(
+                                json.path("publicUuid").asText("")
+                        );
+
+                if (newAccessToken.isBlank() || refreshedUserId < 1 || refreshedUsername.isBlank()) {
                     throw new AuthException(
-                            "The server returned no access token."
+                            "The server returned an incomplete refreshed session."
                     );
                 }
 
@@ -226,6 +260,10 @@ public final class AuthService {
                  */
                 saveRefreshTokenFromCookieStore();
 
+                LockboxAccountContext.activate(refreshedUserId);
+                userId = refreshedUserId;
+                username = refreshedUsername;
+                publicUuid = refreshedPublicUuid;
                 accessToken = newAccessToken;
                 return newAccessToken;
             } catch (AuthException exception) {
@@ -304,6 +342,24 @@ public final class AuthService {
         cookieManager.getCookieStore().add(AUTH_URI, cookie);
     }
 
+    static UUID parsePublicUuid(
+            String value
+    ) {
+        if (value == null || value.isBlank()) {
+            throw new AuthException(
+                    "The server did not return an account public UUID."
+            );
+        }
+
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException exception) {
+            throw new AuthException(
+                    "The server returned an invalid account public UUID."
+            );
+        }
+    }
+
     /**
      * Explicit local logout.
      *
@@ -311,6 +367,10 @@ public final class AuthService {
      */
     public void clearLocalSession() {
         accessToken = null;
+        userId = null;
+        username = null;
+        publicUuid = null;
+        LockboxAccountContext.clear();
         cookieManager.getCookieStore().removeAll();
         refreshTokenStore.delete();
     }
@@ -323,6 +383,10 @@ public final class AuthService {
      */
     private void clearLocalSessionAfterAuthFailure() {
         accessToken = null;
+        userId = null;
+        username = null;
+        publicUuid = null;
+        LockboxAccountContext.clear();
         cookieManager.getCookieStore().removeAll();
 
         try {
@@ -339,13 +403,39 @@ public final class AuthService {
         return accessToken;
     }
 
+    public long getUserId() {
+        Long value = userId;
+        if (value == null) throw new IllegalStateException("No authenticated account ID is available.");
+        return value;
+    }
+
+    public String getUsername() {
+        return username;
+    }
+
+    public UUID getPublicUuid() {
+        UUID value = publicUuid;
+
+        if (value == null) {
+            throw new IllegalStateException(
+                    "No authenticated account public UUID is available."
+            );
+        }
+
+        return value;
+    }
+
     public Optional<String> accessToken() {
         return Optional.ofNullable(accessToken);
     }
 
     public boolean isAuthenticated() {
         return accessToken != null
-                && !accessToken.isBlank();
+                && !accessToken.isBlank()
+                && userId != null
+                && username != null
+                && !username.isBlank()
+                && publicUuid != null;
     }
 
     public CookieManager getCookieManager() {

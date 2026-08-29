@@ -1,18 +1,17 @@
 use std::{
-    env,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
 
 use ml_kem::{
-    DecapsulationKey1024,
+    DecapsulationKey1024, EncapsulationKey1024, TryKeyInit,
     kem::{Decapsulate, Encapsulate, KeyExport, KeyInit},
 };
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::dpapi;
+use crate::{account_context, dpapi};
 
 const ML_KEM_1024_SEED_LENGTH: usize = 64;
 
@@ -22,8 +21,8 @@ const PUBLIC_KEY_FILE_NAME: &str = "ml-kem-1024-public.bin";
 
 #[derive(Debug, Error)]
 pub enum MlKemKeystoreError {
-    #[error("LOCALAPPDATA is not available")]
-    MissingLocalAppData,
+    #[error("no active Lockbox account context")]
+    MissingAccountContext,
 
     #[error("filesystem operation failed: {0}")]
     Io(#[from] std::io::Error),
@@ -52,6 +51,9 @@ pub enum MlKemKeystoreError {
     )]
     PublicKeyMismatch,
 
+    #[error("stored ML-KEM-1024 public key is invalid")]
+    InvalidPublicKey,
+
     #[error("ML-KEM-1024 encapsulation self-test failed")]
     SelfTestFailed,
 }
@@ -63,10 +65,8 @@ pub struct MlKemKeyPaths {
 }
 
 fn application_directory() -> Result<PathBuf, MlKemKeystoreError> {
-    let local_app_data =
-        env::var_os("LOCALAPPDATA").ok_or(MlKemKeystoreError::MissingLocalAppData)?;
-
-    Ok(PathBuf::from(local_app_data).join("CSE-ML-KEM"))
+    account_context::key_directory()
+        .map_err(|_| MlKemKeystoreError::MissingAccountContext)
 }
 
 pub fn default_ml_kem_key_paths() -> Result<MlKemKeyPaths, MlKemKeystoreError> {
@@ -97,6 +97,33 @@ pub fn ml_kem1024_keypair_exists() -> Result<bool, MlKemKeystoreError> {
     let paths = default_ml_kem_key_paths()?;
 
     Ok(paths.private_key_path.exists() && paths.public_key_path.exists())
+}
+
+pub fn ensure_ml_kem1024_keypair() -> Result<(), MlKemKeystoreError> {
+    if ml_kem1024_keypair_exists()? {
+        verify_stored_ml_kem1024_keypair()
+    } else {
+        generate_and_store_ml_kem1024_keypair().map(|_| ())
+    }
+}
+
+pub fn stored_ml_kem1024_public_key() -> Result<Vec<u8>, MlKemKeystoreError> {
+    ensure_ml_kem1024_keypair()?;
+    let paths = default_ml_kem_key_paths()?;
+    Ok(fs::read(paths.public_key_path)?)
+}
+
+/// Loads only the public encryption key. Encryption must never unprotect the
+/// owner's ML-KEM private key.
+pub fn load_stored_ml_kem1024_encapsulation_key(
+) -> Result<EncapsulationKey1024, MlKemKeystoreError> {
+    let paths = default_ml_kem_key_paths()?;
+    if !paths.private_key_path.is_file() || !paths.public_key_path.is_file() {
+        return Err(MlKemKeystoreError::PublicKeyMismatch);
+    }
+    let bytes = fs::read(paths.public_key_path)?;
+    EncapsulationKey1024::new_from_slice(&bytes)
+        .map_err(|_| MlKemKeystoreError::InvalidPublicKey)
 }
 
 /// Loads the DPAPI-protected private seed, reconstructs the
@@ -236,6 +263,7 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), MlKemKeystoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     fn test_paths(test_name: &str) -> (PathBuf, PathBuf) {
         let process_id = std::process::id();

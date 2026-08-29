@@ -1,21 +1,68 @@
 mod dek_envelope;
+mod account_context;
+mod csemlk03;
+mod content_crypto;
 mod dpapi;
 mod file_crypto;
+mod kdf;
 mod keystore;
+mod key_id;
+mod mldsa;
+mod mldsa_keystore;
+mod metadata_crypto;
+mod metadata_view;
 mod mlkem_keystore;
+mod owner_envelope;
+mod received_share;
+mod share_envelope;
+mod share_artifacts;
+mod v3_artifacts;
+mod v3_decrypt;
 
 use jni::{
     EnvUnowned, jni_mangle,
-    objects::JString,
-    sys::{jboolean, jclass, jint},
+    objects::{JByteArray, JString},
+    strings::JNIString,
+    sys::{jboolean, jbyteArray, jclass, jint, jlong, jstring},
 };
+use serde::Serialize;
 
 use ml_kem::{
-    MlKem1024,
+    EncapsulationKey1024, MlKem1024, TryKeyInit,
     kem::{Decapsulate, Encapsulate, Kem, KeyExport},
 };
 
 use std::fmt::Write;
+use std::ptr::null_mut;
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "setAccountId")]
+pub fn set_account_id<'local>(mut env: EnvUnowned<'local>, _class: jclass, account_id: jlong) {
+    if account_id <= 0 || account_context::set(account_id as u64).is_err() {
+        let _ = env.with_env(|env| env.throw_new(
+            JNIString::from("java/lang/IllegalArgumentException"),
+            JNIString::from("Account ID must be positive"),
+        ));
+    }
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "clearAccountId")]
+pub fn clear_account_id<'local>(_env: EnvUnowned<'local>, _class: jclass) {
+    account_context::clear();
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct V3ArtifactsJson {
+    client_file_id: String,
+    container_path: String,
+    manifest_path: String,
+    signature_path: String,
+    container_hash: String,
+    container_size: u64,
+    encryption_key_id: String,
+    signing_key_id: String,
+    revision: u64,
+}
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -360,4 +407,506 @@ pub fn get_file_crypto_progress<'local>(
     _class: jclass,
 ) -> jint {
     file_crypto::file_operation_progress() as jint
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "encryptFileV3")]
+pub fn encrypt_file_v3_jni<'local>(
+    mut unowned_env: EnvUnowned<'local>, _class: jclass,
+    input_path: JString<'local>, output_directory: JString<'local>,
+    original_file_name: JString<'local>, mime_type: JString<'local>,
+    device_id: JByteArray<'local>, created_at: jlong, modified_at: jlong,
+) -> jstring {
+    unowned_env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let result = (|| -> Result<String, String> {
+            let input_path = input_path.try_to_string(env).map_err(|e| e.to_string())?;
+            let output_directory = output_directory.try_to_string(env).map_err(|e| e.to_string())?;
+            let original_file_name = original_file_name.try_to_string(env).map_err(|e| e.to_string())?;
+            let mime_type = mime_type.try_to_string(env).map_err(|e| e.to_string())?;
+            let device_bytes = env.convert_byte_array(&device_id).map_err(|e| e.to_string())?;
+            let device_id: [u8; 16] = device_bytes.try_into()
+                .map_err(|_| "device ID must contain exactly 16 bytes".to_string())?;
+            let encryption_key = mlkem_keystore::load_stored_ml_kem1024_encapsulation_key()
+                .map_err(|e| e.to_string())?;
+            let signing_key = mldsa_keystore::load_stored_signing_key()
+                .map_err(|e| e.to_string())?;
+            let artifacts = v3_artifacts::encrypt_file_v3(
+                &v3_artifacts::EncryptV3Request {
+                    input_path: input_path.into(), output_directory: output_directory.into(),
+                    original_file_name, mime_type, device_id, client_file_id: None, revision: 1,
+                    previous_manifest_hash: [0; 64], created_at_unix_millis: created_at,
+                    modified_at_unix_millis: modified_at,
+                },
+                &v3_artifacts::V3EncryptionKeys {
+                    encryption_public_key: &encryption_key,
+                    signing_private_seed: signing_key.private_seed(),
+                    signing_public_key: signing_key.public_key(),
+                },
+            ).map_err(|e| e.to_string())?;
+            serde_json::to_string(&V3ArtifactsJson {
+                client_file_id: v3_artifacts::format_uuid_public(&artifacts.client_file_id),
+                container_path: artifacts.container_path.to_string_lossy().into_owned(),
+                manifest_path: artifacts.manifest_path.to_string_lossy().into_owned(),
+                signature_path: artifacts.signature_path.to_string_lossy().into_owned(),
+                container_hash: bytes_to_hex(&artifacts.container_hash).to_lowercase(),
+                container_size: artifacts.container_size,
+                encryption_key_id: bytes_to_hex(&artifacts.encryption_key_id).to_lowercase(),
+                signing_key_id: bytes_to_hex(&artifacts.signing_key_id).to_lowercase(),
+                revision: artifacts.revision,
+            }).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(json) => Ok(env.new_string(json)?.into_raw()),
+            Err(error) => {
+                eprintln!("CSEMLK03 encryption failed: {error}");
+                env.throw_new(JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("CSEMLK03 encryption failed: {error}")))?;
+                Ok(null_mut())
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "encryptFileRevisionV3")]
+pub fn encrypt_file_revision_v3_jni<'local>(
+    mut unowned_env: EnvUnowned<'local>, _class: jclass,
+    input_path: JString<'local>, output_directory: JString<'local>,
+    original_file_name: JString<'local>, mime_type: JString<'local>,
+    device_id: JByteArray<'local>, created_at: jlong, modified_at: jlong,
+    client_file_id: JByteArray<'local>, revision: jlong,
+    previous_manifest_hash: JByteArray<'local>,
+) -> jstring {
+    unowned_env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let result = (|| -> Result<String, String> {
+            if revision <= 1 {
+                return Err("revision must be greater than 1".into());
+            }
+            let input_path = input_path.try_to_string(env).map_err(|e| e.to_string())?;
+            let output_directory = output_directory.try_to_string(env).map_err(|e| e.to_string())?;
+            let original_file_name = original_file_name.try_to_string(env).map_err(|e| e.to_string())?;
+            let mime_type = mime_type.try_to_string(env).map_err(|e| e.to_string())?;
+            let device_id: [u8; 16] = env.convert_byte_array(&device_id)
+                .map_err(|e| e.to_string())?.try_into()
+                .map_err(|_| "device ID must contain exactly 16 bytes".to_string())?;
+            let client_file_id: [u8; 16] = env.convert_byte_array(&client_file_id)
+                .map_err(|e| e.to_string())?.try_into()
+                .map_err(|_| "client file ID must contain exactly 16 bytes".to_string())?;
+            let previous_manifest_hash: [u8; 64] = env.convert_byte_array(&previous_manifest_hash)
+                .map_err(|e| e.to_string())?.try_into()
+                .map_err(|_| "previous manifest hash must contain exactly 64 bytes".to_string())?;
+            if previous_manifest_hash.iter().all(|byte| *byte == 0) {
+                return Err("previous manifest hash must not be zero".into());
+            }
+            let encryption_key = mlkem_keystore::load_stored_ml_kem1024_encapsulation_key()
+                .map_err(|e| e.to_string())?;
+            let signing_key = mldsa_keystore::load_stored_signing_key()
+                .map_err(|e| e.to_string())?;
+            let artifacts = v3_artifacts::encrypt_file_v3(
+                &v3_artifacts::EncryptV3Request {
+                    input_path: input_path.into(), output_directory: output_directory.into(),
+                    original_file_name, mime_type, device_id,
+                    client_file_id: Some(client_file_id), revision: revision as u64,
+                    previous_manifest_hash, created_at_unix_millis: created_at,
+                    modified_at_unix_millis: modified_at,
+                },
+                &v3_artifacts::V3EncryptionKeys {
+                    encryption_public_key: &encryption_key,
+                    signing_private_seed: signing_key.private_seed(),
+                    signing_public_key: signing_key.public_key(),
+                },
+            ).map_err(|e| e.to_string())?;
+            serde_json::to_string(&V3ArtifactsJson {
+                client_file_id: v3_artifacts::format_uuid_public(&artifacts.client_file_id),
+                container_path: artifacts.container_path.to_string_lossy().into_owned(),
+                manifest_path: artifacts.manifest_path.to_string_lossy().into_owned(),
+                signature_path: artifacts.signature_path.to_string_lossy().into_owned(),
+                container_hash: bytes_to_hex(&artifacts.container_hash).to_lowercase(),
+                container_size: artifacts.container_size,
+                encryption_key_id: bytes_to_hex(&artifacts.encryption_key_id).to_lowercase(),
+                signing_key_id: bytes_to_hex(&artifacts.signing_key_id).to_lowercase(),
+                revision: artifacts.revision,
+            }).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(json) => Ok(env.new_string(json)?.into_raw()),
+            Err(error) => {
+                eprintln!("CSEMLK03 revision encryption failed: {error}");
+                env.throw_new(JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("CSEMLK03 revision encryption failed: {error}")))?;
+                Ok(null_mut())
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+fn native_bytes<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    operation: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> jbyteArray {
+    unowned_env
+        .with_env(|env| -> Result<jbyteArray, jni::errors::Error> {
+            match operation() {
+                Ok(bytes) => Ok(env.byte_array_from_slice(&bytes)?.into_raw()),
+                Err(error) => {
+                    eprintln!("Native Lockbox operation failed: {error}");
+                    Ok(null_mut())
+                }
+            }
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "getStoredMlKem1024PublicKey")]
+pub fn get_stored_ml_kem1024_public_key<'local>(
+    env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jbyteArray {
+    native_bytes(env, || {
+        mlkem_keystore::stored_ml_kem1024_public_key().map_err(|e| e.to_string())
+    })
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "getStoredMlDsa87PublicKey")]
+pub fn get_stored_ml_dsa87_public_key<'local>(
+    env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jbyteArray {
+    native_bytes(env, || mldsa_keystore::public_key().map_err(|e| e.to_string()))
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "getStoredMlDsa87KeyId")]
+pub fn get_stored_ml_dsa87_key_id<'local>(
+    env: EnvUnowned<'local>,
+    _class: jclass,
+) -> jbyteArray {
+    native_bytes(env, || {
+        let public_key = mldsa_keystore::public_key().map_err(|error| error.to_string())?;
+        Ok(key_id::from_public_key(&public_key).to_vec())
+    })
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "signWithStoredMlDsa87")]
+pub fn sign_with_stored_ml_dsa87<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    message: JByteArray<'local>,
+) -> jbyteArray {
+    unowned_env
+        .with_env(|env| -> Result<jbyteArray, jni::errors::Error> {
+            let message = env.convert_byte_array(&message)?;
+            match mldsa_keystore::sign(&message) {
+                Ok(signature) => Ok(env.byte_array_from_slice(&signature)?.into_raw()),
+                Err(error) => {
+                    eprintln!("Native Lockbox signing failed: {error}");
+                    Ok(null_mut())
+                }
+            }
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle(
+    "kakha.kudava.fdclient.crypto.NativeCryptoBridge",
+    "createRecipientShareEnvelopeV1"
+)]
+pub fn create_recipient_share_envelope_v1<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    container_path: JString<'local>,
+    manifest_path: JString<'local>,
+    signature_path: JString<'local>,
+    owner_public_uuid: JByteArray<'local>,
+    recipient_public_uuid: JByteArray<'local>,
+    recipient_ml_kem_public_key: JByteArray<'local>,
+    expires_at_unix_seconds: jlong,
+) -> jbyteArray {
+    unowned_env
+        .with_env(|env| -> Result<jbyteArray, jni::errors::Error> {
+            let result = (|| -> Result<Vec<u8>, String> {
+                if expires_at_unix_seconds < 0 {
+                    return Err("expiry must be zero or a positive Unix timestamp".into());
+                }
+
+                let container_path = container_path
+                    .try_to_string(env)
+                    .map_err(|error| error.to_string())?;
+                let manifest_path = manifest_path
+                    .try_to_string(env)
+                    .map_err(|error| error.to_string())?;
+                let signature_path = signature_path
+                    .try_to_string(env)
+                    .map_err(|error| error.to_string())?;
+                let owner_public_uuid: [u8; 16] = env
+                    .convert_byte_array(&owner_public_uuid)
+                    .map_err(|error| error.to_string())?
+                    .try_into()
+                    .map_err(|_| "owner public UUID must contain exactly 16 bytes")?;
+                let recipient_public_uuid: [u8; 16] = env
+                    .convert_byte_array(&recipient_public_uuid)
+                    .map_err(|error| error.to_string())?
+                    .try_into()
+                    .map_err(|_| "recipient public UUID must contain exactly 16 bytes")?;
+                let recipient_public_key_bytes = env
+                    .convert_byte_array(&recipient_ml_kem_public_key)
+                    .map_err(|error| error.to_string())?;
+                let recipient_public_key = EncapsulationKey1024::new_from_slice(
+                    &recipient_public_key_bytes,
+                )
+                .map_err(|_| "recipient ML-KEM-1024 public key is invalid")?;
+                let owner_encryption_private =
+                    mlkem_keystore::load_stored_ml_kem1024_decapsulation_key()
+                        .map_err(|error| error.to_string())?;
+                let owner_signing_public = mldsa_keystore::public_key()
+                    .map_err(|error| error.to_string())?;
+
+                share_artifacts::create_recipient_envelope_package(
+                    &share_artifacts::CreateRecipientEnvelopeRequest {
+                        container_path: std::path::Path::new(&container_path),
+                        manifest_path: std::path::Path::new(&manifest_path),
+                        signature_path: std::path::Path::new(&signature_path),
+                        owner_account_id: owner_public_uuid,
+                        recipient_account_id: recipient_public_uuid,
+                        recipient_public_key: &recipient_public_key,
+                        expires_at_unix_seconds: expires_at_unix_seconds as u64,
+                    },
+                    &share_artifacts::OwnerShareKeys {
+                        encryption_private_key: &owner_encryption_private,
+                        signing_public_key: &owner_signing_public,
+                    },
+                )
+                .map_err(|error| error.to_string())
+            })();
+
+            match result {
+                Ok(package) => Ok(env.byte_array_from_slice(&package)?.into_raw()),
+                Err(error) => {
+                    env.throw_new(
+                        JNIString::from("java/lang/IllegalStateException"),
+                        JNIString::from(format!(
+                            "Could not create recipient share envelope: {error}"
+                        )),
+                    )?;
+                    Ok(null_mut())
+                }
+            }
+        })
+        .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "decryptPrivateMetadataV3")]
+pub fn decrypt_private_metadata_v3<'local>(
+    mut unowned_env: EnvUnowned<'local>, _class: jclass,
+    manifest: JByteArray<'local>, signature: JByteArray<'local>, header: JByteArray<'local>,
+) -> jstring {
+    unowned_env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let result = (|| -> Result<String, String> {
+            let manifest = env.convert_byte_array(&manifest).map_err(|e| e.to_string())?;
+            let signature = env.convert_byte_array(&signature).map_err(|e| e.to_string())?;
+            let header = env.convert_byte_array(&header).map_err(|e| e.to_string())?;
+            let signing_public = mldsa_keystore::public_key().map_err(|e| e.to_string())?;
+            let encryption_private = mlkem_keystore::load_stored_ml_kem1024_decapsulation_key()
+                .map_err(|e| e.to_string())?;
+            let view = metadata_view::decrypt_private_metadata(
+                &manifest, &signature, &header, &signing_public, &encryption_private,
+            ).map_err(|e| e.to_string())?;
+            serde_json::to_string(&view).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(json) => Ok(env.new_string(json)?.into_raw()),
+            Err(error) => {
+                eprintln!("Private Lockbox metadata failed: {error}");
+                env.throw_new(JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("Private Lockbox metadata failed: {error}")))?;
+                Ok(null_mut())
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle(
+    "kakha.kudava.fdclient.crypto.NativeCryptoBridge",
+    "decryptReceivedShareMetadataV1"
+)]
+pub fn decrypt_received_share_metadata_v1<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    recipient_envelope: JByteArray<'local>,
+    owner_share_signature: JByteArray<'local>,
+    owner_signing_key_id: JByteArray<'local>,
+    owner_signing_public_key: JByteArray<'local>,
+    manifest: JByteArray<'local>,
+    file_signature: JByteArray<'local>,
+    encrypted_header: JByteArray<'local>,
+    expected_share_uuid: JByteArray<'local>,
+    expected_recipient_public_uuid: JByteArray<'local>,
+    expected_client_file_uuid: JByteArray<'local>,
+    expected_revision: jlong,
+) -> jstring {
+    unowned_env.with_env(|env| -> Result<jstring, jni::errors::Error> {
+        let result = (|| -> Result<String, String> {
+            if expected_revision < 1 {
+                return Err("expected revision must be positive".into());
+            }
+            let as_uuid = |bytes: Vec<u8>, name: &str| -> Result<[u8; 16], String> {
+                bytes.try_into().map_err(|_| format!("{name} must contain exactly 16 bytes"))
+            };
+            let recipient_envelope = env.convert_byte_array(&recipient_envelope)
+                .map_err(|e| e.to_string())?;
+            let owner_share_signature = env.convert_byte_array(&owner_share_signature)
+                .map_err(|e| e.to_string())?;
+            let owner_signing_key_id = env.convert_byte_array(&owner_signing_key_id)
+                .map_err(|e| e.to_string())?;
+            let owner_signing_public_key = env.convert_byte_array(&owner_signing_public_key)
+                .map_err(|e| e.to_string())?;
+            let manifest = env.convert_byte_array(&manifest).map_err(|e| e.to_string())?;
+            let file_signature = env.convert_byte_array(&file_signature)
+                .map_err(|e| e.to_string())?;
+            let encrypted_header = env.convert_byte_array(&encrypted_header)
+                .map_err(|e| e.to_string())?;
+            let request = received_share::ReceivedShareRequest {
+                envelope_package: &recipient_envelope,
+                owner_share_signature: &owner_share_signature,
+                owner_signing_key_id: &owner_signing_key_id,
+                owner_signing_public_key: &owner_signing_public_key,
+                manifest: &manifest,
+                file_signature: &file_signature,
+                encrypted_header: &encrypted_header,
+                expected_share_id: as_uuid(
+                    env.convert_byte_array(&expected_share_uuid).map_err(|e| e.to_string())?,
+                    "expected share UUID",
+                )?,
+                expected_recipient_account_id: as_uuid(
+                    env.convert_byte_array(&expected_recipient_public_uuid)
+                        .map_err(|e| e.to_string())?,
+                    "expected recipient public UUID",
+                )?,
+                expected_client_file_id: as_uuid(
+                    env.convert_byte_array(&expected_client_file_uuid).map_err(|e| e.to_string())?,
+                    "expected client file UUID",
+                )?,
+                expected_revision: expected_revision as u64,
+            };
+            let recipient_private = mlkem_keystore::load_stored_ml_kem1024_decapsulation_key()
+                .map_err(|e| e.to_string())?;
+            let view = received_share::decrypt_received_metadata(&request, &recipient_private)
+                .map_err(|e| e.to_string())?;
+            serde_json::to_string(&view).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(json) => Ok(env.new_string(json)?.into_raw()),
+            Err(error) => {
+                eprintln!("Received Lockbox share metadata failed: {error}");
+                env.throw_new(
+                    JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("Received Lockbox share metadata failed: {error}")),
+                )?;
+                Ok(null_mut())
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle("kakha.kudava.fdclient.crypto.NativeCryptoBridge", "decryptOwnedFileV3")]
+pub fn decrypt_owned_file_v3<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    container_path: JString<'local>,
+    manifest: JByteArray<'local>,
+    signature: JByteArray<'local>,
+    output_path: JString<'local>,
+) -> jboolean {
+    unowned_env.with_env(|env| -> Result<jboolean, jni::errors::Error> {
+        let result = (|| -> Result<(), String> {
+            let container_path = container_path.try_to_string(env).map_err(|e| e.to_string())?;
+            let output_path = output_path.try_to_string(env).map_err(|e| e.to_string())?;
+            let manifest = env.convert_byte_array(&manifest).map_err(|e| e.to_string())?;
+            let signature = env.convert_byte_array(&signature).map_err(|e| e.to_string())?;
+            let signing_public = mldsa_keystore::public_key().map_err(|e| e.to_string())?;
+            let encryption_private = mlkem_keystore::load_stored_ml_kem1024_decapsulation_key()
+                .map_err(|e| e.to_string())?;
+            v3_decrypt::decrypt_owned_to(
+                std::path::Path::new(&container_path), &manifest, &signature,
+                std::path::Path::new(&output_path), &signing_public, &encryption_private,
+            ).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                env.throw_new(
+                    JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("Lockbox decrypt and export failed: {error}")),
+                )?;
+                Ok(false)
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[jni_mangle(
+    "kakha.kudava.fdclient.crypto.NativeCryptoBridge",
+    "decryptReceivedShareFileV1"
+)]
+pub fn decrypt_received_share_file_v1<'local>(
+    mut unowned_env: EnvUnowned<'local>,
+    _class: jclass,
+    container_path: JString<'local>,
+    output_path: JString<'local>,
+    recipient_envelope: JByteArray<'local>,
+    owner_share_signature: JByteArray<'local>,
+    owner_signing_key_id: JByteArray<'local>,
+    owner_signing_public_key: JByteArray<'local>,
+    manifest: JByteArray<'local>,
+    file_signature: JByteArray<'local>,
+    encrypted_header: JByteArray<'local>,
+    expected_share_uuid: JByteArray<'local>,
+    expected_recipient_public_uuid: JByteArray<'local>,
+    expected_client_file_uuid: JByteArray<'local>,
+    expected_revision: jlong,
+) -> jboolean {
+    unowned_env.with_env(|env| -> Result<jboolean, jni::errors::Error> {
+        let result = (|| -> Result<(), String> {
+            if expected_revision < 1 { return Err("expected revision must be positive".into()); }
+            let uuid = |value: &JByteArray<'local>, name: &str| -> Result<[u8; 16], String> {
+                env.convert_byte_array(value).map_err(|e| e.to_string())?.try_into()
+                    .map_err(|_| format!("{name} must contain exactly 16 bytes"))
+            };
+            let container_path = container_path.try_to_string(env).map_err(|e| e.to_string())?;
+            let output_path = output_path.try_to_string(env).map_err(|e| e.to_string())?;
+            let envelope = env.convert_byte_array(&recipient_envelope).map_err(|e| e.to_string())?;
+            let share_signature = env.convert_byte_array(&owner_share_signature).map_err(|e| e.to_string())?;
+            let signing_key_id = env.convert_byte_array(&owner_signing_key_id).map_err(|e| e.to_string())?;
+            let signing_public = env.convert_byte_array(&owner_signing_public_key).map_err(|e| e.to_string())?;
+            let manifest = env.convert_byte_array(&manifest).map_err(|e| e.to_string())?;
+            let file_signature = env.convert_byte_array(&file_signature).map_err(|e| e.to_string())?;
+            let header = env.convert_byte_array(&encrypted_header).map_err(|e| e.to_string())?;
+            let request = received_share::ReceivedShareRequest {
+                envelope_package: &envelope,
+                owner_share_signature: &share_signature,
+                owner_signing_key_id: &signing_key_id,
+                owner_signing_public_key: &signing_public,
+                manifest: &manifest,
+                file_signature: &file_signature,
+                encrypted_header: &header,
+                expected_share_id: uuid(&expected_share_uuid, "share UUID")?,
+                expected_recipient_account_id: uuid(&expected_recipient_public_uuid, "recipient UUID")?,
+                expected_client_file_id: uuid(&expected_client_file_uuid, "client file UUID")?,
+                expected_revision: expected_revision as u64,
+            };
+            let recipient_private = mlkem_keystore::load_stored_ml_kem1024_decapsulation_key()
+                .map_err(|e| e.to_string())?;
+            v3_decrypt::decrypt_shared_to(
+                std::path::Path::new(&container_path), std::path::Path::new(&output_path),
+                &request, &recipient_private,
+            ).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                env.throw_new(
+                    JNIString::from("java/lang/IllegalStateException"),
+                    JNIString::from(format!("Shared Lockbox decrypt and export failed: {error}")),
+                )?;
+                Ok(false)
+            }
+        }
+    }).resolve::<jni::errors::ThrowRuntimeExAndDefault>()
 }

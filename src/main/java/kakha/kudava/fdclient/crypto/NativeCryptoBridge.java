@@ -32,13 +32,101 @@ public final class NativeCryptoBridge {
     private NativeCryptoBridge() {
     }
 
+    public static native void setAccountId(long accountId);
+
+    public static native void clearAccountId();
+
     public static native boolean createStoredMlKem1024Keypair();
 
     public static native boolean verifyStoredMlKem1024Keypair();
 
     public static native boolean testStoredMlKemDekEnvelope();
 
+    public static native byte[] getStoredMlKem1024PublicKey();
+
+    public static native byte[] getStoredMlDsa87PublicKey();
+
+    public static native byte[] getStoredMlDsa87KeyId();
+
+    public static native byte[] signWithStoredMlDsa87(byte[] message);
+
+    public static native byte[] createRecipientShareEnvelopeV1(
+            String containerPath,
+            String manifestPath,
+            String signaturePath,
+            byte[] ownerPublicUuid,
+            byte[] recipientPublicUuid,
+            byte[] recipientMlKemPublicKey,
+            long expiresAtUnixSeconds
+    );
+
     public static native boolean encryptSelectedFile(String inputPath);
+
+    public static native String encryptFileV3(
+            String inputPath,
+            String outputDirectory,
+            String originalFileName,
+            String mimeType,
+            byte[] deviceId,
+            long createdAtUnixMillis,
+            long modifiedAtUnixMillis
+    );
+
+    public static native String encryptFileRevisionV3(
+            String inputPath,
+            String outputDirectory,
+            String originalFileName,
+            String mimeType,
+            byte[] deviceId,
+            long createdAtUnixMillis,
+            long modifiedAtUnixMillis,
+            byte[] clientFileId,
+            long revision,
+            byte[] previousManifestHash
+    );
+
+    public static native String decryptPrivateMetadataV3(
+            byte[] manifest,
+            byte[] signature,
+            byte[] encryptedHeader
+    );
+
+    public static native String decryptReceivedShareMetadataV1(
+            byte[] recipientEnvelope,
+            byte[] ownerShareSignature,
+            byte[] ownerSigningKeyId,
+            byte[] ownerSigningPublicKey,
+            byte[] manifest,
+            byte[] fileSignature,
+            byte[] encryptedHeader,
+            byte[] expectedShareUuid,
+            byte[] expectedRecipientPublicUuid,
+            byte[] expectedClientFileUuid,
+            long expectedRevision
+    );
+
+    public static native boolean decryptOwnedFileV3(
+            String containerPath,
+            byte[] manifest,
+            byte[] signature,
+            String outputPath
+    );
+
+    public static native boolean decryptReceivedShareFileV1(
+            String containerPath,
+            String outputPath,
+            byte[] recipientEnvelope,
+            byte[] ownerShareSignature,
+            byte[] ownerSigningKeyId,
+            byte[] ownerSigningPublicKey,
+            byte[] manifest,
+            byte[] fileSignature,
+            byte[] encryptedHeader,
+            byte[] expectedShareUuid,
+            byte[] expectedRecipientPublicUuid,
+            byte[] expectedClientFileUuid,
+            long expectedRevision
+    );
 
     public static native boolean decryptSelectedFile(String inputPath);
 
