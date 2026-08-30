@@ -9,9 +9,41 @@ use winfsp::filesystem::{
     DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo, VolumeInfo,
     WideNameInfo,
 };
+use winfsp::notify::{Notifier, NotifyInfo, NotifyingFileSystemContext};
 use winfsp::{Result, U16CStr};
 
-pub struct MetadataDrive(pub Arc<RwLock<Arc<Tree>>>, pub Arc<crate::refresh::Refresh>);
+pub struct MetadataDrive(
+    pub Arc<RwLock<Arc<Tree>>>,
+    pub Arc<crate::refresh::Refresh>,
+    pub Arc<Mutex<Vec<crate::changes::Change>>>,
+);
+
+impl NotifyingFileSystemContext<()> for MetadataDrive {
+    fn should_notify(&self) -> Option<()> {
+        if self.2.lock().unwrap().is_empty() {
+            None
+        } else {
+            Some(())
+        }
+    }
+
+    fn notify(&self, _: (), notifier: &Notifier) {
+        // Drain only after WinFsp has acquired its notification guard; a busy
+        // guard must not lose pending events.
+        let changes = std::mem::take(&mut *self.2.lock().unwrap());
+        for change in changes {
+            let mut info = NotifyInfo::<32760>::new();
+            info.action = change.action;
+            info.filter = change.filter;
+            // Notify names are length-delimited, not NUL-terminated. set_name()
+            // includes a trailing NUL, which prevents Windows matching watchers.
+            let name: Vec<u16> = change.path.encode_utf16().collect();
+            if info.set_name_raw(name.as_slice()).is_ok() {
+                notifier.notify(&info);
+            }
+        }
+    }
+}
 pub struct Handle {
     tree: Mutex<Arc<Tree>>,
     path: String,

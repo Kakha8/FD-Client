@@ -43,7 +43,9 @@ The initial snapshot is loaded after login. Starting a fresh directory scan
 requests are combined, with a two-second cooldown after completion. The cached
 listing is returned if the request fails or takes longer than 15 seconds;
 otherwise the same directory scan returns the refreshed snapshot. Explorer is
-also notified for changed folders. Pagination stays on a stable snapshot until the scan
+also sent filesystem notifications for added/removed folders and files, including
+new nested folders. Directory metadata caching is disabled so refreshed folders
+can be opened without remounting. Pagination stays on a stable snapshot until the scan
 restarts. This is refresh-on-browse, not continuous push synchronization.
 
 Failed backend refreshes retain the previous snapshot and log the error; a later
@@ -72,4 +74,5 @@ or copied into this drive.
 
 Run `./native-drive/smoke-test.ps1` from PowerShell for a real mount/unmount test
 with synthetic nested folder metadata, refresh requests, added/deleted entries,
+new nested folders without remounting, Windows folder-created notifications,
 refresh failure cache preservation, sizes, and rejection of content reads.

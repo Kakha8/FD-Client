@@ -1,4 +1,5 @@
 //! Read-only SSE metadata drive. File content reads are unsupported.
+mod changes;
 mod drive;
 mod refresh;
 mod tree;
@@ -6,7 +7,7 @@ use drive::MetadataDrive;
 use std::io::{self, BufRead, Write};
 use std::os::windows::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use tree::Tree;
 use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 use windows::Win32::System::LibraryLoader::LoadLibraryW;
@@ -15,7 +16,7 @@ use windows::Win32::UI::Shell::{
     SHCNE_DRIVEADD, SHCNE_DRIVEREMOVED, SHCNE_UPDATEDIR, SHCNF_PATHW, SHChangeNotify,
 };
 use windows::core::{HSTRING, w};
-use winfsp::host::{FileSystemHost, VolumeParams};
+use winfsp::host::{FileSystemHost, FileSystemParams, VolumeParams};
 
 fn choose_letter(used: u32) -> Option<String> {
     // Prefer F:, but never replace an existing drive (including Google Drive).
@@ -86,12 +87,16 @@ fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .unicode_on_disk(true)
         .persistent_acls(false)
         .read_only_volume(true)
-        .file_info_timeout(1000)
-        .dir_info_timeout(0);
+        // The binding's DirInfoTimeout setter does not enable its Valid flag.
+        // Set the base timeout to zero so restarted folder scans reach us.
+        .file_info_timeout(0);
     let tree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
     let refresh = Arc::new(refresh::Refresh::default());
-    let mut host: FileSystemHost<MetadataDrive> =
-        FileSystemHost::new(params, MetadataDrive(tree.clone(), refresh.clone()))?;
+    let notifications = Arc::new(Mutex::new(Vec::new()));
+    let mut host: FileSystemHost<MetadataDrive> = FileSystemHost::new_with_timer::<(), 100>(
+        FileSystemParams::default_params(params),
+        MetadataDrive(tree.clone(), refresh.clone(), notifications.clone()),
+    )?;
     host.mount(&letter)?;
     host.start()?;
     let root = HSTRING::from(format!("{letter}\\"));
@@ -127,7 +132,9 @@ fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         changed.insert(tree::parent(&entry.path).to_string());
                     }
                 }
+                let events = changes::diff(&previous, &snapshot);
                 *tree.write().unwrap() = Arc::new(snapshot);
+                notifications.lock().unwrap().extend(events);
                 refresh.completed(true);
                 // Notify only changed directories, avoiding a refresh/notification loop.
                 for path in changed {
