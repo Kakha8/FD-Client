@@ -14,6 +14,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -36,8 +37,20 @@ public final class AuthService {
     private final ObjectMapper objectMapper =
             new ObjectMapper();
 
-    private final RefreshTokenStore refreshTokenStore =
-            new DpapiRefreshTokenStore();
+    private final RefreshTokenStore refreshTokenStore;
+    private final Runnable clearAccountContext;
+    private final java.util.function.LongConsumer activateAccountContext;
+
+    public AuthService() {
+        this(new DpapiRefreshTokenStore(), LockboxAccountContext::clear, LockboxAccountContext::activate);
+    }
+
+    AuthService(RefreshTokenStore refreshTokenStore, Runnable clearAccountContext,
+                java.util.function.LongConsumer activateAccountContext) {
+        this.refreshTokenStore = java.util.Objects.requireNonNull(refreshTokenStore);
+        this.clearAccountContext = java.util.Objects.requireNonNull(clearAccountContext);
+        this.activateAccountContext = java.util.Objects.requireNonNull(activateAccountContext);
+    }
 
     /*
      * Receives and sends the refresh_token cookie.
@@ -59,8 +72,17 @@ public final class AuthService {
     private volatile Long userId;
     private volatile String username;
     private volatile UUID publicUuid;
+    private volatile String mfaChallenge;
+    private volatile Instant mfaExpiresAt;
 
-    public CompletableFuture<String> login(
+    public record LoginResult(boolean mfaRequired) {}
+
+    public void cancelMfa() {
+        mfaChallenge = null;
+        mfaExpiresAt = null;
+    }
+
+    public CompletableFuture<LoginResult> login(
             String username,
             String password
     ) {
@@ -83,11 +105,12 @@ public final class AuthService {
          * This does not delete the DPAPI file yet.
          */
         cookieManager.getCookieStore().removeAll();
+        cancelMfa();
         accessToken = null;
         userId = null;
         this.username = null;
         publicUuid = null;
-        LockboxAccountContext.clear();
+        clearAccountContext.run();
 
         final String requestBody;
 
@@ -113,7 +136,58 @@ public final class AuthService {
                         request,
                         HttpResponse.BodyHandlers.ofString()
                 )
-                .thenApply(this::handleLoginResponse);
+                .thenApply(this::handleInitialLoginResponse);
+    }
+
+    LoginResult handleInitialLoginResponse(HttpResponse<String> response) {
+        if (response.statusCode() == 200) {
+            try {
+                JsonNode json = objectMapper.readTree(response.body());
+                if (json.path("mfaRequired").asBoolean(false)) {
+                    String challenge = json.path("challengeToken").asText("");
+                    Instant expiry = Instant.parse(json.path("expiresAt").asText(""));
+                    if (challenge.isBlank() || !expiry.isAfter(Instant.now()) || json.has("accessToken"))
+                        throw new AuthException("The server returned an invalid MFA challenge.");
+                    // A password challenge must never activate an account or retain old credentials.
+                    clearLocalSession();
+                    mfaChallenge = challenge;
+                    mfaExpiresAt = expiry;
+                    return new LoginResult(true);
+                }
+            } catch (Exception ignored) {
+                cancelMfa();
+                throw new AuthException("Could not process the login challenge. Start again.");
+            }
+        }
+        handleLoginResponse(response);
+        return new LoginResult(false);
+    }
+
+    public CompletableFuture<String> completeMfa(String code) {
+        String challenge = mfaChallenge;
+        Instant expiry = mfaExpiresAt;
+        if (challenge == null || expiry == null || !expiry.isAfter(Instant.now())) {
+            cancelMfa();
+            return CompletableFuture.failedFuture(new AuthException("Login challenge expired. Start again."));
+        }
+        if (code == null || !code.matches("[0-9]{6}"))
+            return CompletableFuture.failedFuture(new AuthException("Enter exactly six digits."));
+        ObjectNode body = objectMapper.createObjectNode().put("challengeToken", challenge).put("code", code);
+        HttpRequest request = HttpRequest.newBuilder(AUTH_URI.resolve("mfa/totp"))
+                .timeout(Duration.ofSeconds(20)).header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
+        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply(this::handleMfaResponse);
+    }
+
+    String handleMfaResponse(HttpResponse<String> response) {
+            if (response.statusCode() != 200) {
+                throw new AuthException(response.statusCode() == 429 ? "Too many attempts. Try again later."
+                        : "Code rejected or challenge expired. Try a fresh code, or start again.");
+            }
+            String token = handleLoginResponse(response);
+            cancelMfa();
+            return token;
     }
 
     private String handleLoginResponse(
@@ -152,7 +226,7 @@ public final class AuthService {
                  */
                 saveRefreshTokenFromCookieStore();
 
-                LockboxAccountContext.activate(newUserId);
+                activateAccountContext.accept(newUserId);
                 userId = newUserId;
                 username = newUsername;
                 publicUuid = newPublicUuid;
@@ -161,10 +235,7 @@ public final class AuthService {
             } catch (AuthException exception) {
                 throw exception;
             } catch (Exception exception) {
-                throw new CompletionException(
-                        "Could not process the login response.",
-                        exception
-                );
+                throw new AuthException("Could not process the login response.");
             }
         }
 
@@ -178,8 +249,7 @@ public final class AuthService {
         throw new AuthException(
                 "Login failed. Server returned HTTP "
                         + response.statusCode()
-                        + ". Response: "
-                        + response.body()
+                        + "."
         );
     }
 
@@ -260,7 +330,7 @@ public final class AuthService {
                  */
                 saveRefreshTokenFromCookieStore();
 
-                LockboxAccountContext.activate(refreshedUserId);
+                activateAccountContext.accept(refreshedUserId);
                 userId = refreshedUserId;
                 username = refreshedUsername;
                 publicUuid = refreshedPublicUuid;
@@ -366,11 +436,12 @@ public final class AuthService {
      * This method reports token-file deletion failures to the caller.
      */
     public void clearLocalSession() {
+        cancelMfa();
         accessToken = null;
         userId = null;
         username = null;
         publicUuid = null;
-        LockboxAccountContext.clear();
+        clearAccountContext.run();
         cookieManager.getCookieStore().removeAll();
         refreshTokenStore.delete();
     }
@@ -386,7 +457,7 @@ public final class AuthService {
         userId = null;
         username = null;
         publicUuid = null;
-        LockboxAccountContext.clear();
+        clearAccountContext.run();
         cookieManager.getCookieStore().removeAll();
 
         try {

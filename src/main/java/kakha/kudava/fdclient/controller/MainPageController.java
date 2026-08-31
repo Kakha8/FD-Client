@@ -65,6 +65,13 @@ public class MainPageController {
     }
 
     @FXML
+    private void onTotpEnroll(ActionEvent event) {
+        if (authService == null || !authService.isAuthenticated()) return;
+        TotpDeviceTestWindow.showEnrollment(((Node) event.getSource()).getScene().getWindow(),
+                authService, () -> onLogout(event));
+    }
+
+    @FXML
     private void onOpenDrive() {
         if (mountedDrive == null) return;
         try {

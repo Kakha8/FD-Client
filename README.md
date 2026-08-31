@@ -16,6 +16,46 @@ for decrypting user content.
 
 ## Highlights
 
+### ESP32 TOTP enrollment (test accounts only)
+
+The main page has **Enroll ESP32 authenticator** alongside the serial-only test.
+Close Arduino Serial Monitor, select the ESP32 COM port, and click **Read device**.
+The client uses the `ENROLL_EXPORT` protocol in `firmware/TOTP-Enrollment-Test` and
+keeps the serial connection open between reads. No firmware change is needed if
+that sketch is already installed.
+
+Enter a device name and current account password, then click **Start enrollment**.
+This sends the Base32 seed over HTTPS to `/api/mfa/totp/enrollments` using the current
+access token. Enter the six-digit code displayed by the ESP32 and click
+**Confirm and enable MFA** before the pending enrollment expires (five minutes).
+The client clears the displayed seed after the pending enrollment is created.
+It does not persist the seed, password, challenge token, or authenticator codes.
+Java strings cannot be guaranteed erased from memory.
+
+Confirmation enables MFA and revokes backend refresh sessions. The client logs out
+locally, and the next password login opens a TOTP prompt. Wait for the next displayed
+code: the enrollment confirmation code has already been consumed. Keep the numeric
+device ID shown on success if you intend to enroll additional devices: those require
+an existing active device ID and current code. The backend has no device-list API yet.
+Closing a pending enrollment does not activate it; starting another replaces it.
+Requests are never automatically retried. If a confirmation response is lost, MFA
+may already be active; try signing in with the ESP32 rather than assuming failure.
+
+Backend prerequisites (configure the Spring service, not this client's `.env`):
+
+- `TOTP_ENCRYPTION_KEY_ID` and `TOTP_ENCRYPTION_KEY_BASE64` (a dedicated 32-byte key,
+  encoded using standard Base64). Preserve this key while device records use it.
+- The TOTP enrollment and two-stage-login database schema from the supplied backend.
+- `TOTP_ENROLLMENT_API_ENABLED=true` to opt into enrollment for testing. HTTP 503
+  indicates that enrollment is unavailable; the client does not change this flag.
+
+Use disposable test accounts. Recovery codes and device removal/disable are not
+implemented in the supplied backend. The test sketch permits unauthenticated seed
+export, and the UI intentionally shows the seed. This is not production-ready MFA.
+Never erase/reflash away the stored seed of an enrolled device without a recovery plan.
+
+### File encryption
+
 - Client-side file encryption and authenticated decryption
 - Chunked `CSEMLK03` encrypted containers for large-file streaming
 - AES-256-GCM content encryption
