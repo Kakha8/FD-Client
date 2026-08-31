@@ -1,5 +1,6 @@
 module kakha.kudava.fdclient {
     requires javafx.controls;
+    requires com.fazecast.jSerialComm;
     requires javafx.fxml;
     requires com.fasterxml.jackson.databind;
     requires java.net.http;

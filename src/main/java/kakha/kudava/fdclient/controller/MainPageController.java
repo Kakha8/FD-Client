@@ -60,6 +60,11 @@ public class MainPageController {
     }
 
     @FXML
+    private void onTotpTest(ActionEvent event) {
+        TotpDeviceTestWindow.show(((Node) event.getSource()).getScene().getWindow());
+    }
+
+    @FXML
     private void onOpenDrive() {
         if (mountedDrive == null) return;
         try {
