@@ -114,9 +114,10 @@ public class MainPageController {
                 }
             }
 
-            mainStage.getScene().setRoot(loginRoot);
+            kakha.kudava.fdclient.WindowFrame.setContent(mainStage, loginRoot);
             mainStage.setTitle("FD Client - Login");
-            mainStage.sizeToScene();
+            mainStage.setWidth(480);
+            mainStage.setHeight(640);
             mainStage.centerOnScreen();
         } catch (IOException | RuntimeException exception) {
             Alert alert = new Alert(Alert.AlertType.ERROR);

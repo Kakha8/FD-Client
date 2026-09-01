@@ -1,0 +1,24 @@
+.login-page { -fx-font-family: "Segoe UI"; -fx-font-size: 14px; -fx-background-color: #11161d; }
+.form-panel { -fx-padding: 36 42; -fx-background-color: #11161d; }
+.login-brand { -fx-padding: 0 0 22 0; }
+.login-brand-name { -fx-text-fill: #f8fafc; -fx-font-size: 15px; -fx-font-weight: bold; }
+.eyebrow { -fx-text-fill: #60a5fa; -fx-font-size: 12px; -fx-font-weight: bold; }
+.form-heading { -fx-text-fill: #f8fafc; -fx-font-size: 28px; -fx-font-weight: bold; -fx-padding: 9 0 8 0; }
+.description { -fx-text-fill: #929dac; -fx-font-size: 14px; -fx-line-spacing: 3; }
+.fields { -fx-padding: 24 0 0 0; }
+.field-label { -fx-text-fill: #c5ccd6; -fx-font-size: 13px; -fx-font-weight: bold; }
+.password-label { -fx-padding: 7 0 0 0; }
+.login-page .text-field { -fx-min-height: 48; -fx-pref-height: 48; -fx-padding: 0 14; -fx-background-color: #141920; -fx-background-radius: 11; -fx-border-color: rgba(255,255,255,0.09); -fx-border-radius: 11; -fx-text-fill: #f8fafc; -fx-prompt-text-fill: #6f7a89; -fx-highlight-fill: #2563eb; }
+.login-page .text-field:focused { -fx-border-color: #3b82f6; -fx-background-color: #151b23; -fx-effect: dropshadow(gaussian, rgba(59,130,246,0.2), 7, 0.2, 0, 0); }
+.login-page .button { -fx-cursor: hand; -fx-font-weight: bold; -fx-background-radius: 11; -fx-min-height: 48; }
+.primary-button { -fx-background-color: #3b82f6; -fx-text-fill: white; -fx-effect: dropshadow(gaussian, rgba(37,99,235,0.24), 20, 0, 0, 8); }
+.primary-button:hover { -fx-background-color: #2563eb; }
+.primary-button:focused { -fx-border-color: #a8caff; -fx-border-radius: 11; }
+.secondary-button { -fx-background-color: transparent; -fx-text-fill: #a8caff; -fx-border-color: rgba(148,163,184,0.25); -fx-border-radius: 11; }
+.secondary-button:hover, .secondary-button:focused { -fx-background-color: rgba(59,130,246,0.1); }
+.login-page .button:disabled, .login-page .text-field:disabled { -fx-opacity: 0.68; }
+.security-note { -fx-text-fill: #6f7a89; -fx-font-size: 11px; -fx-padding: 22 0 0 0; }
+.login-message { -fx-text-fill: #fca5a5; -fx-font-size: 13px; -fx-padding: 10 12; -fx-background-color: rgba(239,68,68,0.08); -fx-background-radius: 9; }
+.login-message.progress { -fx-text-fill: #a8caff; -fx-background-color: rgba(59,130,246,0.08); }
+.mfa-help { -fx-text-fill: #929dac; -fx-font-size: 12px; -fx-line-spacing: 3; }
+.login-page .totp-code { -fx-alignment: center; -fx-font-family: "Consolas"; -fx-font-size: 24px; }
