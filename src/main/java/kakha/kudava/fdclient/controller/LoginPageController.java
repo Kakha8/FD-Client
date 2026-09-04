@@ -10,6 +10,8 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextFormatter;
+import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 import kakha.kudava.fdclient.service.AuthService;
 
@@ -30,17 +32,32 @@ public class LoginPageController {
 
     @FXML
     private Label errorLabel;
+    @FXML private Label eyebrowLabel;
+    @FXML private Label headingLabel;
+    @FXML private Label descriptionLabel;
+    @FXML private Label accountLabel;
+    @FXML private VBox credentialsPane;
+    @FXML private VBox mfaPane;
+    @FXML private TextField codeField;
+    @FXML private Button startAgainButton;
+    private boolean mfaMode;
 
     private final AuthService authService = new AuthService();
 
     @FXML
     private void initialize() {
+        errorLabel.visibleProperty().bind(errorLabel.textProperty().isNotEmpty());
+        errorLabel.managedProperty().bind(errorLabel.visibleProperty());
+        codeField.setTextFormatter(new TextFormatter<String>(change ->
+                change.getControlNewText().matches("[0-9]{0,6}") ? change : null));
         setLoginControlsDisabled(true);
+        errorLabel.getStyleClass().add("progress");
         errorLabel.setText("Restoring your session...");
 
         authService.restoreSession()
                 .whenComplete((restored, error) ->
                         Platform.runLater(() -> {
+                            errorLabel.getStyleClass().remove("progress");
                             if (error != null) {
                                 setLoginControlsDisabled(false);
                                 showError(getErrorMessage(error));
@@ -61,6 +78,7 @@ public class LoginPageController {
 
     @FXML
     private void onLogin(ActionEvent event) {
+        if (mfaMode) { verifyMfa(); return; }
         String username = usernameField.getText().trim();
         String password = passwordField.getText();
 
@@ -69,13 +87,13 @@ public class LoginPageController {
             return;
         }
 
-        loginButton.setDisable(true);
+        setLoginControlsDisabled(true);
         errorLabel.setText("");
 
         authService.login(username, password)
-                .whenComplete((accessToken, error) ->
+                .whenComplete((result, error) ->
                         Platform.runLater(() -> {
-                            loginButton.setDisable(false);
+                            setLoginControlsDisabled(false);
                             passwordField.clear();
 
                             if (error != null) {
@@ -83,12 +101,71 @@ public class LoginPageController {
                                 return;
                             }
 
-                            System.out.println("Login successful");
+                            if (result.mfaRequired()) {
+                                showMfaPane();
+                                return;
+                            }
                             openMainPage();
                         })
                 );
     }
 
+    private void showMfaPane() {
+        mfaMode = true;
+        credentialsPane.setVisible(false);
+        credentialsPane.setManaged(false);
+        mfaPane.setVisible(true);
+        mfaPane.setManaged(true);
+        startAgainButton.setVisible(true);
+        startAgainButton.setManaged(true);
+        eyebrowLabel.setText("TWO-STEP SIGN IN");
+        headingLabel.setText("Verify your identity");
+        descriptionLabel.setText("Enter the six-digit code shown on your authenticator device.");
+        accountLabel.setText("Signing in as " + usernameField.getText().trim());
+        errorLabel.setText("");
+        setLoginControlsDisabled(false);
+        codeField.requestFocus();
+    }
+
+    @FXML
+    private void onStartAgain() {
+        authService.cancelMfa();
+        mfaMode = false;
+        passwordField.clear();
+        codeField.clear();
+        credentialsPane.setVisible(true);
+        credentialsPane.setManaged(true);
+        mfaPane.setVisible(false);
+        mfaPane.setManaged(false);
+        startAgainButton.setVisible(false);
+        startAgainButton.setManaged(false);
+        eyebrowLabel.setText("WELCOME BACK");
+        headingLabel.setText("Sign in to File Drive");
+        descriptionLabel.setText("Enter your account details to continue.");
+        errorLabel.setText("");
+        setLoginControlsDisabled(false);
+        passwordField.requestFocus();
+    }
+
+    private void verifyMfa() {
+        String entered = codeField.getText();
+        if (!entered.matches("[0-9]{6}")) {
+            showError("Enter exactly six digits.");
+            return;
+        }
+        setLoginControlsDisabled(true);
+        errorLabel.setText("");
+        authService.completeMfa(entered).whenComplete((token, error) -> Platform.runLater(() -> {
+            codeField.clear();
+            setLoginControlsDisabled(false);
+            if (error != null) {
+                showError(getErrorMessage(error));
+                codeField.requestFocus();
+                return;
+            }
+            openMainPage();
+        }));
+    }
     private String getErrorMessage(Throwable error) {
         Throwable cause = error;
 
@@ -110,6 +187,10 @@ public class LoginPageController {
         loginButton.setDisable(disabled);
         usernameField.setDisable(disabled);
         passwordField.setDisable(disabled);
+        codeField.setDisable(disabled);
+        startAgainButton.setDisable(disabled);
+        loginButton.setText(disabled ? (mfaMode ? "Verifying..." : "Signing in...")
+                : (mfaMode ? "Verify and sign in" : "Sign in"));
     }
 
     private void openMainPage() {
@@ -138,7 +219,7 @@ public class LoginPageController {
                     .getWindow();
 
             Scene currentScene = stage.getScene();
-            currentScene.setRoot(mainPageRoot);
+            kakha.kudava.fdclient.WindowFrame.setContent(stage, mainPageRoot);
 
             stage.setTitle("FD Client");
             // Use an explicit size because the original Scene was created with

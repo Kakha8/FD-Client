@@ -1,0 +1,10 @@
+.window-frame { -fx-background-color: #11161d; -fx-background-radius: 14; -fx-border-color: #343b46; -fx-border-width: 1; -fx-border-radius: 14; }
+.window-frame:maximized { -fx-background-radius: 0; -fx-border-radius: 0; }
+.window-titlebar { -fx-background-color: #252a32; -fx-min-height: 34; -fx-pref-height: 34; -fx-max-height: 34; }
+.window-title { -fx-font-family: "Segoe UI"; -fx-font-size: 12px; -fx-text-fill: #c5ccd6; }
+.window-control { -fx-background-color: transparent; -fx-background-radius: 0; -fx-border-width: 0; -fx-padding: 0; -fx-min-width: 44; -fx-pref-width: 44; -fx-max-width: 44; -fx-min-height: 34; -fx-pref-height: 34; -fx-max-height: 34; -fx-cursor: hand; }
+.window-glyph { -fx-fill: transparent; -fx-stroke: #60a5fa; -fx-stroke-width: 1.3; }
+.window-control:hover { -fx-background-color: #343e4c; }
+.window-control:pressed { -fx-background-color: #1c334f; }
+.window-close:hover { -fx-background-color: #a92b3b; }
+.window-close:hover .window-glyph { -fx-stroke: white; }

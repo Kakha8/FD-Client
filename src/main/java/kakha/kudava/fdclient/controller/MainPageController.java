@@ -60,6 +60,18 @@ public class MainPageController {
     }
 
     @FXML
+    private void onTotpTest(ActionEvent event) {
+        TotpDeviceTestWindow.show(((Node) event.getSource()).getScene().getWindow());
+    }
+
+    @FXML
+    private void onTotpEnroll(ActionEvent event) {
+        if (authService == null || !authService.isAuthenticated()) return;
+        TotpDeviceTestWindow.showEnrollment(((Node) event.getSource()).getScene().getWindow(),
+                authService, () -> onLogout(event));
+    }
+
+    @FXML
     private void onOpenDrive() {
         if (mountedDrive == null) return;
         try {
@@ -102,9 +114,10 @@ public class MainPageController {
                 }
             }
 
-            mainStage.getScene().setRoot(loginRoot);
+            kakha.kudava.fdclient.WindowFrame.setContent(mainStage, loginRoot);
             mainStage.setTitle("FD Client - Login");
-            mainStage.sizeToScene();
+            mainStage.setWidth(480);
+            mainStage.setHeight(640);
             mainStage.centerOnScreen();
         } catch (IOException | RuntimeException exception) {
             Alert alert = new Alert(Alert.AlertType.ERROR);
