@@ -1,8 +1,9 @@
 # File Drive Client
 
 A Windows desktop client for **File Drive Lockbox**: client-side encrypted file
-storage with authenticated revisions, device-aware sharing, and a JavaFX interface
-backed by a native Rust cryptographic core.
+storage with authenticated revisions, device-aware sharing, ESP32-backed TOTP
+two-factor authentication, and a JavaFX interface backed by a native Rust
+cryptographic core.
 
 The Lockbox design keeps plaintext, file keys, and private signing material on
 registered client devices. The backend stores encrypted containers and the
@@ -18,11 +19,23 @@ for decrypting user content.
 
 ### ESP32 TOTP enrollment (test accounts only)
 
+The client supports the complete test flow: serial discovery and seed import,
+authenticated enrollment with the backend, enrollment confirmation using a live
+TOTP code, and two-stage login for accounts that have MFA enabled.
+
 The main page has **Enroll ESP32 authenticator** alongside the serial-only test.
 Close Arduino Serial Monitor, select the ESP32 COM port, and click **Read device**.
-The client uses the `ENROLL_EXPORT` protocol in `firmware/TOTP-Enrollment-Test` and
-keeps the serial connection open between reads. No firmware change is needed if
-that sketch is already installed.
+The client uses the `ENROLL_EXPORT` serial protocol and keeps the serial connection
+open between reads. It scans the available COM ports, but the user must select the
+ESP32 because a port description alone cannot securely identify a device. The test
+sketch must answer at 115200 baud with one JSON line in this form:
+
+```json
+{"type":"totp-enrollment","secretBase32":"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567","algorithm":"SHA1","digits":6,"period":30}
+```
+
+`secretBase32` must contain exactly 32 uppercase Base32 characters. The ESP32 must
+also have a correctly synchronized clock to generate codes accepted by the backend.
 
 Enter a device name and current account password, then click **Start enrollment**.
 This sends the Base32 seed over HTTPS to `/api/mfa/totp/enrollments` using the current
@@ -114,6 +127,8 @@ flowchart LR
 |---|---|
 | Desktop UI | Java 21, JavaFX 21, FXML |
 | Networking | Java HTTP Client over HTTPS |
+| ESP32 communication | jSerialComm, 115200 baud |
+| Second factor | TOTP with SHA-1, six digits, 30-second period |
 | Native cryptography | Rust 2024 edition exposed through JNI |
 | Local secret protection | Windows DPAPI |
 | Serialization | Jackson |
@@ -128,6 +143,8 @@ flowchart LR
 - Visual Studio 2022 Build Tools with **Desktop development with C++**
 - A running, compatible File Drive Spring backend
 - A backend TLS certificate trusted by the JDK used to run the client
+- For TOTP enrollment: an ESP32 running the enrollment test sketch and a free COM
+  port (close Arduino Serial Monitor before the client connects)
 
 The native module currently targets Windows because it integrates with DPAPI and
 is loaded as `native_rust.dll`.
@@ -223,6 +240,20 @@ sessions even when the code works under an interactive Windows account.
 6. Share a specific revision with a user or another owned device.
 7. Upload a hash-linked revision and optionally recreate its shares using fresh
    recipient envelopes.
+
+### TOTP authentication workflow
+
+1. Sign in with a test account and open **Enroll ESP32 authenticator**.
+2. Connect the ESP32, close Arduino Serial Monitor, refresh the port list, and
+   select its COM port.
+3. Click **Read device**, enter a device name and current password, then click
+   **Start enrollment**.
+4. Enter the current six-digit code displayed by the ESP32 and confirm enrollment.
+5. Sign in again with the account password. When prompted, enter a fresh code from
+   the ESP32 to complete the login challenge.
+
+For an account that already has MFA enabled, enrollment of another ESP32 also
+requires the numeric ID and a current code from an active authenticator.
 
 ## Repository layout
 
