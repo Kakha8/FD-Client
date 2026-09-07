@@ -2,16 +2,84 @@
 
 <?import javafx.scene.control.Button?>
 <?import javafx.scene.control.Label?>
-<?import javafx.scene.layout.AnchorPane?>
+<?import javafx.scene.control.Tooltip?>
+<?import javafx.scene.control.MenuButton?>
+<?import javafx.scene.control.MenuItem?>
+<?import javafx.scene.control.CustomMenuItem?>
+<?import javafx.scene.control.SeparatorMenuItem?>
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.layout.HBox?>
+<?import javafx.scene.image.Image?>
+<?import javafx.scene.image.ImageView?>
+<?import javafx.scene.layout.BorderPane?>
+<?import javafx.scene.layout.VBox?>
+<?import javafx.scene.layout.FlowPane?>
+<?import javafx.scene.layout.StackPane?>
+<?import javafx.scene.shape.SVGPath?>
 
-
-<AnchorPane prefHeight="400.0" prefWidth="600.0" xmlns="http://javafx.com/javafx/25" xmlns:fx="http://javafx.com/fxml/1" fx:controller="kakha.kudava.fdclient.controller.MainPageController">
-   <children>
-      <Button layoutX="57.0" layoutY="176.0" onAction="#onTotpTest" text="ESP32 secret test" />
-      <Button layoutX="230.0" layoutY="176.0" onAction="#onTotpEnroll" text="Enroll ESP32 authenticator" />
-      <Button layoutX="57.0" layoutY="63.0" mnemonicParsing="false" onAction="#onCse" prefHeight="40.0" prefWidth="93.0" text="CSE" />
-      <Button layoutX="493.0" layoutY="25.0" mnemonicParsing="false" onAction="#onLogout" prefHeight="35.0" prefWidth="82.0" text="Log out" />
-      <Button fx:id="openDriveButton" layoutX="175.0" layoutY="63.0" mnemonicParsing="false" onAction="#onOpenDrive" prefHeight="40.0" text="Open SSE drive" disable="true" />
-      <Label fx:id="driveStatusLabel" layoutX="57.0" layoutY="115.0" prefWidth="510.0" wrapText="true" text="SSE drive is not mounted." />
-   </children>
-</AnchorPane>
+<BorderPane prefHeight="400.0" prefWidth="760.0" styleClass="main-page" xmlns="http://javafx.com/javafx/25" xmlns:fx="http://javafx.com/fxml/1" fx:controller="kakha.kudava.fdclient.controller.MainPageController">
+   <left>
+      <VBox fx:id="sidebar" minWidth="-Infinity" prefWidth="64.0" maxWidth="-Infinity" styleClass="sidebar, collapsed">
+         <children>
+            <StackPane minHeight="48" prefHeight="48" maxHeight="48" alignment="CENTER">
+               <ImageView fitWidth="32" fitHeight="40" preserveRatio="true" smooth="true" accessibleText="File Drive logo">
+                  <image><Image url="@logo.png" /></image>
+               </ImageView>
+            </StackPane>
+            <Button fx:id="menuButton" mnemonicParsing="false" onAction="#onToggleSidebar" styleClass="menu-button" accessibleText="Toggle navigation">
+               <graphic><SVGPath content="M4 7h16 M4 12h16 M4 17h16" styleClass="nav-icon" /></graphic>
+            </Button>
+            <Button mnemonicParsing="false" onAction="#onHome" styleClass="nav-button" text="Home" accessibleText="Home"><graphic><SVGPath content="M3 10l9-7 9 7 M5 9v12h5v-7h4v7h5V9" styleClass="nav-icon" /></graphic></Button>
+            <Button mnemonicParsing="false" onAction="#onOpenDrive" styleClass="nav-button" text="Sync" accessibleText="Sync" disable="false"><graphic><SVGPath content="M20 4v6h-6 M4 20v-6h6 M4.5 9a8 8 0 0 1 13.2-4L20 10 M4 14l2.3 5A8 8 0 0 0 19.5 15" styleClass="nav-icon" /></graphic></Button>
+            <Button mnemonicParsing="false" onAction="#onCse" styleClass="nav-button" text="Lockbox" accessibleText="Lockbox"><graphic><SVGPath content="M6 3.5h12a2.5 2.5 0 0 1 2.5 2.5v12a2.5 2.5 0 0 1-2.5 2.5H6A2.5 2.5 0 0 1 3.5 18V6A2.5 2.5 0 0 1 6 3.5Z M15.25 12a3.25 3.25 0 1 0-6.5 0a3.25 3.25 0 1 0 6.5 0 M12 8.75v2 M12 15.25v-2 M8.75 12h2 M15.25 12h-2 M6.5 20.5v1 M17.5 20.5v1" styleClass="nav-icon" /></graphic></Button>
+            <Button mnemonicParsing="false" onAction="#onSharedWithMe" styleClass="nav-button" text="Shared with me" accessibleText="Shared with me"><graphic><SVGPath content="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2 M13.5 7a4 4 0 1 0-8 0a4 4 0 1 0 8 0 M22 21v-2a4 4 0 0 0-3-3.8" styleClass="nav-icon" /></graphic></Button>
+            <VBox VBox.vgrow="ALWAYS" />
+         </children>
+      </VBox>
+   </left>
+   <center>
+      <StackPane minWidth="0">
+      <VBox fx:id="homeContent" spacing="24" minWidth="0" styleClass="content-pane">
+         <children>
+            <FlowPane hgap="16" vgap="12">
+               <Button onAction="#onTotpTest" text="ESP32 secret test" />
+               <Button onAction="#onTotpEnroll" text="Enroll ESP32 authenticator" />
+            </FlowPane>
+            <Button fx:id="openDriveButton" mnemonicParsing="false" onAction="#onOpenDrive" prefHeight="40.0" text="Open SSE drive" disable="true" />
+            <Label fx:id="driveStatusLabel" maxWidth="Infinity" minWidth="0" wrapText="true" text="SSE drive is not mounted." />
+         </children>
+      </VBox>
+      <VBox fx:id="sharedContent" spacing="16" minWidth="0" styleClass="content-pane" visible="false" managed="false">
+         <Label text="Shared with me" style="-fx-font-size: 22px; -fx-text-fill: #e5e7eb;" />
+         <Label text="The shared-files view is not connected yet." wrapText="true" />
+      </VBox>
+      <HBox spacing="10" alignment="CENTER_RIGHT" maxWidth="-Infinity" maxHeight="42" StackPane.alignment="TOP_RIGHT">
+         <StackPane.margin><Insets top="14" right="24" /></StackPane.margin>
+         <Button mnemonicParsing="false" onAction="#onNotifications" styleClass="notification-button" accessibleText="Notifications">
+            <graphic><SVGPath content="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4" styleClass="nav-icon" /></graphic>
+            <tooltip><Tooltip text="Notifications" /></tooltip>
+         </Button>
+      <MenuButton fx:id="userMenu" styleClass="user-menu" accessibleText="Open account menu" popupSide="BOTTOM" maxWidth="42" maxHeight="42">
+         <graphic><Label fx:id="userInitials" text="U" styleClass="user-avatar" /></graphic>
+         <items>
+            <CustomMenuItem hideOnClick="false">
+               <content>
+                  <HBox spacing="11" alignment="CENTER_LEFT" styleClass="user-account">
+                     <Label fx:id="accountInitials" text="U" styleClass="user-avatar, user-avatar-large" />
+                     <VBox spacing="3">
+                        <Label fx:id="accountName" text="User" maxWidth="165" styleClass="user-account-name" />
+                        <Label text="Signed in" styleClass="user-account-status" />
+                     </VBox>
+                  </HBox>
+               </content>
+            </CustomMenuItem>
+            <SeparatorMenuItem />
+            <MenuItem text="Sign out" onAction="#onLogout">
+               <graphic><SVGPath content="M10 17l5-5-5-5 M15 12H3 M14 4h4a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3h-4" styleClass="nav-icon" /></graphic>
+            </MenuItem>
+         </items>
+      </MenuButton>
+      </HBox>
+      </StackPane>
+   </center>
+</BorderPane>

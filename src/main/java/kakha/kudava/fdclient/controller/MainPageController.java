@@ -10,6 +10,14 @@ import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.layout.VBox;
+import javafx.animation.Timeline;
+import javafx.animation.KeyFrame;
+import javafx.animation.KeyValue;
+import javafx.animation.Interpolator;
+import javafx.scene.control.Tooltip;
+import javafx.scene.layout.StackPane;
+import javafx.util.Duration;
 import javafx.stage.Stage;
 import javafx.stage.Window;
 import kakha.kudava.fdclient.service.AuthService;
@@ -22,13 +30,75 @@ public class MainPageController {
     private AuthService authService;
     @FXML private Label driveStatusLabel;
     @FXML private Button openDriveButton;
+    @FXML private VBox sidebar;
+    @FXML private javafx.scene.control.MenuButton userMenu;
+    @FXML private Label userInitials;
+    @FXML private Label accountInitials;
+    @FXML private Label accountName;
+    @FXML private VBox homeContent;
+    @FXML private VBox sharedContent;
+    private boolean sidebarExpanded = false;
+    private Timeline sidebarAnimation;
     private String mountedDrive;
+
+    @FXML
+    private void initialize() {
+        sidebar.getChildren().stream().filter(Button.class::isInstance).map(Button.class::cast).forEach(button -> {
+            StackPane icon = new StackPane(button.getGraphic());
+            icon.setMinSize(22, 22);
+            icon.setPrefSize(22, 22);
+            icon.setMaxSize(22, 22);
+            button.setGraphic(icon);
+            button.setMaxWidth(Double.MAX_VALUE);
+            button.setTooltip(new Tooltip(button.getAccessibleText()));
+            if (button.getStyleClass().contains("nav-button")) button.setText("");
+        });
+    }
+
+    @FXML
+    private void onToggleSidebar() {
+        sidebarExpanded = !sidebarExpanded;
+        double target = sidebarExpanded ? 220 : 64;
+        if (sidebarAnimation != null) sidebarAnimation.stop();
+        sidebarAnimation = new Timeline(new KeyFrame(Duration.millis(200),
+                new KeyValue(sidebar.prefWidthProperty(), target, Interpolator.EASE_BOTH)));
+        sidebarAnimation.play();
+        sidebar.getStyleClass().setAll("sidebar", sidebarExpanded ? "expanded" : "collapsed");
+        sidebar.lookupAll(".nav-button").forEach(node -> ((Button) node).setText(sidebarExpanded ? ((Button) node).getAccessibleText() : ""));
+    }
+
+    @FXML private void onHome() { showSharedContent(false); }
+
+    @FXML private void onSharedWithMe() { showSharedContent(true); }
+
+    private void showSharedContent(boolean shared) {
+        homeContent.setVisible(!shared);
+        homeContent.setManaged(!shared);
+        sharedContent.setVisible(shared);
+        sharedContent.setManaged(shared);
+    }
+
+    @FXML
+    private void onNotifications() {
+        new Alert(Alert.AlertType.INFORMATION, "You’re all caught up.").showAndWait();
+    }
 
     public void setAuthService(AuthService authService) {
         this.authService = Objects.requireNonNull(
                 authService,
                 "authService"
         );
+        String username = authService.getUsername();
+        if (username == null || username.isBlank()) username = "User";
+        String[] parts = username.trim().split("[\\s._-]+");
+        String initials = parts.length > 1
+                ? parts[0].substring(0, 1) + parts[parts.length - 1].substring(0, 1)
+                : username.substring(0, Math.min(2, username.length()));
+        initials = initials.toUpperCase(java.util.Locale.ROOT);
+        userInitials.setText(initials);
+        accountInitials.setText(initials);
+        accountName.setText(username);
+        userMenu.setAccessibleText("Open account menu for " + username);
         initializeDrive();
     }
 
@@ -103,9 +173,7 @@ public class MainPageController {
             );
             Parent loginRoot = loader.load();
 
-            Stage mainStage = (Stage) ((Node) event.getSource())
-                    .getScene()
-                    .getWindow();
+            Stage mainStage = (Stage) userMenu.getScene().getWindow();
 
             // Close authenticated secondary windows, such as the CSE page.
             for (Window window : Window.getWindows().toArray(Window[]::new)) {

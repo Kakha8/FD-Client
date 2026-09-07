@@ -8,3 +8,34 @@
 .window-control:pressed { -fx-background-color: #1c334f; }
 .window-close:hover { -fx-background-color: #a92b3b; }
 .window-close:hover .window-glyph { -fx-stroke: white; }
+
+.main-page { -fx-background-color: #111418; -fx-font-family: "Arial"; }
+.sidebar { -fx-background-color: #1c2026; -fx-border-color: transparent rgba(255,255,255,0.06) transparent transparent; -fx-border-width: 0 1 0 0; -fx-padding: 14 12; -fx-spacing: 6; }
+.menu-button, .nav-button { -fx-background-color: transparent; -fx-text-fill: #9aa3af; -fx-font-family: "Arial"; -fx-font-size: 14px; -fx-alignment: CENTER_LEFT; -fx-graphic-text-gap: 12; -fx-padding: 0 12; -fx-cursor: hand; -fx-background-radius: 10; -fx-min-height: 44; -fx-pref-height: 44; -fx-max-height: 44; }
+.menu-button { -fx-background-radius: 11; }
+.nav-button:hover, .menu-button:hover, .nav-button:focused { -fx-background-color: #242a32; -fx-text-fill: #e5e7eb; }
+.nav-icon { -fx-fill: transparent; -fx-stroke: #9aa3af; -fx-stroke-width: 1.8; -fx-stroke-line-cap: round; -fx-stroke-line-join: round; }
+.sidebar.collapsed { -fx-padding: 14 9; }
+.nav-button:hover .nav-icon { -fx-stroke: #e5e7eb; }
+.collapsed .nav-button, .collapsed .menu-button { -fx-alignment: CENTER; -fx-padding: 0; -fx-graphic-text-gap: 0; }
+.logout-button { -fx-background-color: #242a32; }
+.content-pane { -fx-background-color: #111418; -fx-padding: 72 32 32 48; }
+.content-pane .label { -fx-text-fill: #9aa3af; }
+.content-pane .button { -fx-background-color: #242a32; -fx-text-fill: #e5e7eb; -fx-background-radius: 8; -fx-padding: 10 14; -fx-cursor: hand; }
+.content-pane .button:hover { -fx-background-color: #2d3540; }
+.user-menu { -fx-min-width: 42; -fx-pref-width: 42; -fx-min-height: 42; -fx-pref-height: 42; -fx-padding: 5; -fx-background-color: #1c2026; -fx-background-radius: 999; -fx-border-radius: 999; -fx-border-color: rgba(255,255,255,0.1); -fx-cursor: hand; }
+.user-menu > .label { -fx-padding: 0; }
+.user-menu > .arrow-button { -fx-padding: 0; }
+.user-menu > .arrow-button > .arrow { -fx-padding: 0; -fx-shape: ""; }
+.user-menu:hover, .user-menu:showing, .user-menu:focused { -fx-background-color: #2d3540; -fx-border-color: #3b82f6; }
+.user-avatar { -fx-min-width: 30; -fx-pref-width: 30; -fx-min-height: 30; -fx-pref-height: 30; -fx-alignment: CENTER; -fx-background-color: #3b82f6; -fx-background-radius: 999; -fx-text-fill: white; -fx-font-size: 11px; -fx-font-weight: bold; }
+.user-avatar-large { -fx-min-width: 38; -fx-min-height: 38; -fx-font-size: 13px; }
+.user-menu .context-menu { -fx-pref-width: 250; -fx-padding: 8; -fx-background-color: #1c2026; -fx-background-radius: 14; -fx-border-radius: 14; -fx-border-color: rgba(255,255,255,0.1); }
+.user-menu .menu-item { -fx-padding: 8; -fx-background-radius: 8; }
+.user-menu .menu-item > .label, .user-account-name { -fx-text-fill: #e5e7eb; }
+.user-menu .menu-item:focused { -fx-background-color: #2d3540; }
+.user-account { -fx-padding: 8; }
+.user-account-name { -fx-font-size: 14px; -fx-font-weight: bold; }
+.user-account-status { -fx-text-fill: #9aa3af; -fx-font-size: 12px; }
+.notification-button { -fx-min-width: 42; -fx-pref-width: 42; -fx-max-width: 42; -fx-min-height: 42; -fx-pref-height: 42; -fx-max-height: 42; -fx-alignment: CENTER; -fx-padding: 0; -fx-background-color: transparent; -fx-background-radius: 999; -fx-border-radius: 999; -fx-border-color: transparent; -fx-cursor: hand; }
+.notification-button:hover { -fx-background-color: #2d3540; -fx-border-color: #3b82f6; }
