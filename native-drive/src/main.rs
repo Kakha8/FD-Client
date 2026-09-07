@@ -17,7 +17,8 @@ use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegGetValueW, RegSetValueExW,
 };
 use windows::Win32::UI::Shell::{
-    SHCNE_DRIVEADD, SHCNE_DRIVEREMOVED, SHCNE_UPDATEDIR, SHCNF_PATHW, SHChangeNotify,
+    SHCNE_DRIVEADD, SHCNE_DRIVEREMOVED, SHCNE_UPDATEITEM, SHCNE_UPDATEDIR, SHCNF_PATHW,
+    SHChangeNotify, SHUpdateImageW,
 };
 use windows::core::{HSTRING, w};
 use winfsp::host::{FileSystemHost, FileSystemParams, VolumeParams};
@@ -40,8 +41,11 @@ fn configure_drive_icon(letter: &str) {
         source_icon.exists().then(|| source_icon.into_os_string())
     });
     let Some(icon) = icon else { return };
+    // Explorer reads the machine-wide DriveIcons key on current Windows, but
+    // that key requires elevation. The per-user Explorer application override
+    // works without elevation and is the appropriate choice for this client.
     let key_path = format!(
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\{}\DefaultIcon",
+        r"Software\Classes\Applications\Explorer.exe\Drives\{}\DefaultIcon",
         letter.trim_end_matches(':')
     );
     let key_path = HSTRING::from(key_path);
@@ -58,10 +62,24 @@ fn configure_drive_icon(letter: &str) {
 
 fn remove_drive_icon(letter: &str) {
     let key_path = HSTRING::from(format!(
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\{}",
+        r"Software\Classes\Applications\Explorer.exe\Drives\{}",
         letter.trim_end_matches(':')
     ));
     unsafe { let _ = RegDeleteTreeW(HKEY_CURRENT_USER, &key_path); }
+}
+
+fn refresh_drive_icon(letter: &str) {
+    let root = HSTRING::from(format!(r"{}\", letter));
+    unsafe {
+        // Invalidate both the shell image cache and the existing drive item.
+        SHUpdateImageW(&root, 0, 0, 0);
+        SHChangeNotify(
+            SHCNE_UPDATEITEM,
+            SHCNF_PATHW,
+            Some(root.as_ptr().cast()),
+            None,
+        );
+    }
 }
 
 fn load_installed_winfsp() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -150,6 +168,7 @@ fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     host.mount(&letter)?;
     host.start()?;
     configure_drive_icon(&letter);
+    refresh_drive_icon(&letter);
     let root = HSTRING::from(format!("{letter}\\"));
     // Make Explorer refresh its cached This PC / navigation-pane drive list.
     unsafe {
