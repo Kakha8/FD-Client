@@ -20,6 +20,7 @@ public final class VirtualDriveService {
     private AuthService refreshAuth;
     private long generation;
     private CompletableFuture<String> mountFuture;
+    private SseTransferService transferService;
 
     private VirtualDriveService() {
         Runtime.getRuntime().addShutdownHook(new Thread(this::unmount, "fd-drive-shutdown"));
@@ -43,12 +44,19 @@ public final class VirtualDriveService {
         Process started = null;
         try {
             Path executable = findExecutable();
+            Path staging = Files.createTempDirectory("fd-drive-");
+            SseTransferService transfers = new SseTransferService(staging);
             synchronized (this) {
                 if (generation != request) throw new CancellationException();
-                started = new ProcessBuilder(executable.toString())
-                        .redirectErrorStream(true)
-                        .start();
+                ProcessBuilder builder = new ProcessBuilder(executable.toString()).redirectErrorStream(true);
+                builder.environment().put("FD_DRIVE_STAGING", staging.toString());
+                Path icon = Path.of("native-drive", "fd-client.ico").toAbsolutePath().normalize();
+                if (Files.isRegularFile(icon)) {
+                    builder.environment().put("FD_CLIENT_ICON", icon.toString());
+                }
+                started = builder.start();
                 process = started;
+                transferService = transfers;
             }
             Process child = started;
             BufferedReader output = new BufferedReader(new InputStreamReader(
@@ -67,10 +75,11 @@ public final class VirtualDriveService {
                 }
                 
             }
-            Thread reader = new Thread(() -> readEvents(child, output), "fd-drive-events");
+            Thread reader = new Thread(() -> readEvents(child, output, transfers, request), "fd-drive-events");
             reader.setDaemon(true);
             reader.start();
             child.onExit().thenRun(() -> {
+                transfers.cleanDownloads();
                 synchronized (this) {
                     if (process == child) process = null;
                 }
@@ -99,6 +108,14 @@ public final class VirtualDriveService {
     }
 
     private int refreshSnapshot(AuthService auth, long request) {
+        SseTransferService transfers;
+        synchronized (this) { transfers = transferService; }
+        if (transfers == null) throw new CancellationException("Drive unmounted.");
+        // Prevent an older listing from hiding a just-created folder/file.
+        synchronized (transfers) { return refreshSnapshotLocked(auth, request); }
+    }
+
+    private int refreshSnapshotLocked(AuthService auth, long request) {
         Process child;
         synchronized (this) { child = process; }
         CompletableFuture<Integer> acknowledgement = new CompletableFuture<>();
@@ -137,10 +154,14 @@ public final class VirtualDriveService {
     }
 
     /** Sole reader after the mount handshake: ACKs and refresh requests share stdout. */
-    private void readEvents(Process child, BufferedReader output) {
+    private void readEvents(Process child, BufferedReader output, SseTransferService transfers, long request) {
         try (output) {
             String line;
             while ((line = output.readLine()) != null) {
+                if (line.startsWith("TRANSFER ")) {
+                    handleTransfer(child, transfers, request, line.substring(9));
+                    continue;
+                }
                 AuthService auth = null;
                 synchronized (this) {
                     if (process != child) return;
@@ -184,6 +205,71 @@ public final class VirtualDriveService {
         }
     }
 
+    private void handleTransfer(Process child, SseTransferService transfers, long request, String message) {
+        final AuthService auth;
+        final long account;
+        final String token;
+        synchronized (this) {
+            if (process != child || generation != request) return;
+            auth = refreshAuth;
+            account = auth == null ? -1 : auth.getUserId();
+            token = auth == null ? "" : auth.getAccessToken();
+        }
+        // The pipe reader must remain available for snapshot ACKs while HTTP is running.
+        CompletableFuture.runAsync(() -> {
+            synchronized (transfers) {
+                var json = new com.fasterxml.jackson.databind.ObjectMapper();
+                com.fasterxml.jackson.databind.JsonNode command;
+                try { command = json.readTree(message); }
+                catch (Exception error) { return; }
+                com.fasterxml.jackson.databind.node.ObjectNode response;
+                try {
+                    response = transfers.execute(command, token, () -> {
+                        synchronized (this) {
+                            return process == child && generation == request && auth != null
+                                    && auth.isAuthenticated() && auth.getUserId() == account;
+                        }
+                    });
+                } catch (Exception error) {
+                    response = json.createObjectNode().put("ok", false);
+                    String detail = "SSE drive transfer failed: " + error.getMessage();
+                    if (command.path("op").asText().startsWith("upload")) {
+                        try { detail += "\nYour local copy is retained at:\n" + transfers.uploadPath(command.path("file").asText()); }
+                        catch (IllegalArgumentException ignored) { }
+                    }
+                    if (command.path("op").asText().startsWith("upload") || command.path("op").asText().equals("delete")) {
+                        if (command.path("op").asText().equals("delete")) {
+                            detail += "\nItem: " + command.path("path").asText()
+                                    + "\nRefresh the drive to check its server status before retrying.";
+                        }
+                        String notice = detail;
+                        try {
+                            javafx.application.Platform.runLater(() -> {
+                                var alert = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.ERROR);
+                                alert.setTitle("SSE drive operation failed");
+                                alert.setHeaderText("The operation could not be completed.");
+                                alert.setContentText(notice);
+                                alert.show();
+                            });
+                        } catch (IllegalStateException ignored) { }
+                    }
+                    System.err.println(detail);
+                }
+                response.put("request", command.path("request").asLong());
+                synchronized (this) {
+                    if (process != child || generation != request) {
+                        transfers.cleanDownloads();
+                        return;
+                    }
+                    try {
+                        child.getOutputStream().write(("TRANSFER " + response + "\n").getBytes(StandardCharsets.UTF_8));
+                        child.getOutputStream().flush();
+                    } catch (IOException error) { System.err.println("Could not acknowledge SSE transfer."); }
+                }
+            }
+        });
+    }
+
     /** Non-blocking. Closing stdin asks the helper to unmount, with a kill fallback. */
     public synchronized void unmount() {
         ++generation;
@@ -192,6 +278,7 @@ public final class VirtualDriveService {
         mountFuture = null;
         listingFuture = null;
         refreshAuth = null;
+        transferService = null;
         if (pendingUpdate != null) {
             pendingUpdate.completeExceptionally(new CancellationException("Drive unmounted."));
             pendingUpdate = null;
@@ -222,8 +309,8 @@ public final class VirtualDriveService {
 
     private static Path findExecutable() {
         for (String location : new String[]{
-                "native-drive/target/debug/fd-virtual-drive.exe",
-                "native-drive/target/release/fd-virtual-drive.exe"
+                "native-drive/target/release/fd-virtual-drive.exe",
+                "native-drive/target/debug/fd-virtual-drive.exe"
         }) {
             Path candidate = Path.of(location).toAbsolutePath().normalize();
             if (Files.isRegularFile(candidate)) return candidate;

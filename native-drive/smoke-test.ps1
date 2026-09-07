@@ -28,9 +28,9 @@ try {
     }
     Write-Output "Verified empty mounted drive: $root ($($drive.VolumeLabel), $($drive.DriveFormat))"
     $snapshot = @{ entries = @(
-        @{ path = '\Docs'; directory = $true; size = 0 },
-        @{ path = '\Docs\hello.txt'; directory = $false; size = 123; created = 1788048000000; modified = 1788048000000 },
-        @{ path = '\root.txt'; directory = $false; size = 45 }
+        @{ id = 1; path = '\Docs'; directory = $true; size = 0 },
+        @{ id = 1; path = '\Docs\hello.txt'; directory = $false; size = 123; created = 1788048000000; modified = 1788048000000 },
+        @{ id = 1; path = '\root.txt'; directory = $false; size = 45 }
     ) } | ConvertTo-Json -Depth 5 -Compress
     $process.StandardInput.WriteLine($snapshot)
     $process.StandardInput.Flush()
@@ -46,10 +46,10 @@ try {
         throw 'Nested file metadata was incorrect.'
     }
     $readRejected = $false
-    try { [System.IO.File]::ReadAllText((Join-Path $root 'Docs\hello.txt')) | Out-Null }
-    catch [System.IO.IOException] { $readRejected = $true }
-    if (-not $readRejected) { throw 'File-content reads must be unsupported in this milestone.' }
-    Write-Output 'Verified nested directory listing, file sizes, and rejection of content reads.'
+    try { [System.IO.File]::WriteAllText((Join-Path $root 'Docs\hello.txt'), 'overwrite') | Out-Null }
+    catch { $readRejected = $true }
+    if (-not $readRejected) { throw 'Overwriting an existing cloud file must be rejected.' }
+    Write-Output 'Verified nested directory listing, file sizes, and overwrite protection.'
     $watcher = [System.IO.FileSystemWatcher]::new($root)
     $watcher.IncludeSubdirectories = $true
     $watcher.NotifyFilter = [System.IO.NotifyFilters]::DirectoryName
@@ -64,11 +64,11 @@ try {
         throw 'A new directory scan did not request a backend refresh.'
     }
     $replacement = @{ entries = @(
-        @{ path = '\Docs'; directory = $true; size = 0 },
-        @{ path = '\Docs\added-on-web.txt'; directory = $false; size = 456 },
-        @{ path = '\WebFolder'; directory = $true; size = 0 },
-        @{ path = '\WebFolder\Nested'; directory = $true; size = 0 },
-        @{ path = '\WebFolder\Nested\inside.txt'; directory = $false; size = 789 }
+        @{ id = 1; path = '\Docs'; directory = $true; size = 0 },
+        @{ id = 1; path = '\Docs\added-on-web.txt'; directory = $false; size = 456 },
+        @{ id = 1; path = '\WebFolder'; directory = $true; size = 0 },
+        @{ id = 1; path = '\WebFolder\Nested'; directory = $true; size = 0 },
+        @{ id = 1; path = '\WebFolder\Nested\inside.txt'; directory = $false; size = 789 }
     ) } | ConvertTo-Json -Depth 5 -Compress
     $process.StandardInput.WriteLine($replacement)
     $process.StandardInput.Flush()

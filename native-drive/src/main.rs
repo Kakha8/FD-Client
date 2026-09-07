@@ -1,7 +1,8 @@
-//! Read-only SSE metadata drive. File content reads are unsupported.
+//! SSE drive with Java-owned HTTP transfers over private pipes.
 mod changes;
 mod drive;
 mod refresh;
+mod transfer;
 mod tree;
 use drive::MetadataDrive;
 use std::io::{self, BufRead, Write};
@@ -11,7 +12,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use tree::Tree;
 use windows::Win32::Storage::FileSystem::GetLogicalDrives;
 use windows::Win32::System::LibraryLoader::LoadLibraryW;
-use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+use windows::Win32::System::Registry::{
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegGetValueW, RegSetValueExW,
+};
 use windows::Win32::UI::Shell::{
     SHCNE_DRIVEADD, SHCNE_DRIVEREMOVED, SHCNE_UPDATEDIR, SHCNF_PATHW, SHChangeNotify,
 };
@@ -24,6 +28,40 @@ fn choose_letter(used: u32) -> Option<String> {
         .chain(b'D'..=b'E')
         .find(|letter| used & (1 << (letter - b'A')) == 0)
         .map(|letter| format!("{}:", letter as char))
+}
+
+fn configure_drive_icon(letter: &str) {
+    let icon = std::env::var_os("FD_CLIENT_ICON").or_else(|| {
+        let exe_icon = std::env::current_exe().ok()?.parent()?.join("fd-client.ico");
+        if exe_icon.exists() { return Some(exe_icon.into_os_string()); }
+        let build_icon = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fd-client.ico");
+        if build_icon.exists() { return Some(build_icon.into_os_string()); }
+        let source_icon = std::env::current_dir().ok()?.join(r"native-drive\fd-client.ico");
+        source_icon.exists().then(|| source_icon.into_os_string())
+    });
+    let Some(icon) = icon else { return };
+    let key_path = format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\{}\DefaultIcon",
+        letter.trim_end_matches(':')
+    );
+    let key_path = HSTRING::from(key_path);
+    let icon = HSTRING::from(icon);
+    let mut key = Default::default();
+    unsafe {
+        if RegCreateKeyExW(HKEY_CURRENT_USER, &key_path, Some(0), None, Default::default(), KEY_SET_VALUE, None, &mut key, None).is_ok() {
+            let bytes = std::slice::from_raw_parts(icon.as_ptr().cast::<u8>(), (icon.len() + 1) * 2);
+            let _ = RegSetValueExW(key, None, Some(0), REG_SZ, Some(bytes));
+            let _ = RegCloseKey(key);
+        }
+    }
+}
+
+fn remove_drive_icon(letter: &str) {
+    let key_path = HSTRING::from(format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\{}",
+        letter.trim_end_matches(':')
+    ));
+    unsafe { let _ = RegDeleteTreeW(HKEY_CURRENT_USER, &key_path); }
 }
 
 fn load_installed_winfsp() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -79,6 +117,8 @@ fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut params = VolumeParams::new();
     params
         .filesystem_name("FD-SSE")
+        // Mount through WinFsp.Disk so Explorer treats this as a disk volume
+        // and honors the per-drive custom icon registered below.
         .sector_size(512)
         .sectors_per_allocation_unit(8)
         .max_component_length(255)
@@ -86,19 +126,30 @@ fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .case_preserved_names(true)
         .unicode_on_disk(true)
         .persistent_acls(false)
-        .read_only_volume(true)
+        .read_only_volume(false)
         // The binding's DirInfoTimeout setter does not enable its Valid flag.
         // Set the base timeout to zero so restarted folder scans reach us.
         .file_info_timeout(0);
     let tree = Arc::new(RwLock::new(Arc::new(Tree::empty())));
     let refresh = Arc::new(refresh::Refresh::default());
     let notifications = Arc::new(Mutex::new(Vec::new()));
+    let transfers = Arc::new(transfer::Transfers::default());
+    let staging = std::env::var_os("FD_DRIVE_STAGING")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
     let mut host: FileSystemHost<MetadataDrive> = FileSystemHost::new_with_timer::<(), 100>(
         FileSystemParams::default_params(params),
-        MetadataDrive(tree.clone(), refresh.clone(), notifications.clone()),
+        MetadataDrive(
+            tree.clone(),
+            refresh.clone(),
+            notifications.clone(),
+            transfers.clone(),
+            staging,
+        ),
     )?;
     host.mount(&letter)?;
     host.start()?;
+    configure_drive_icon(&letter);
     let root = HSTRING::from(format!("{letter}\\"));
     // Make Explorer refresh its cached This PC / navigation-pane drive list.
     unsafe {
@@ -122,10 +173,24 @@ fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
             refresh.completed(false);
             continue;
         }
+        if let Some(response) = command.strip_prefix("TRANSFER ") {
+            transfers.complete(response);
+            continue;
+        }
         match Tree::parse(&command) {
-            Ok(snapshot) => {
+            Ok(mut snapshot) => {
+                let mut current = tree.write().unwrap();
+                // An Explorer copy is visible while its data is still being staged.
+                for (key, entry) in &current.0 {
+                    if key != "\\" && entry.id == 0 {
+                        snapshot
+                            .0
+                            .entry(key.clone())
+                            .or_insert_with(|| entry.clone());
+                    }
+                }
                 let count = snapshot.0.len() - 1;
-                let previous = tree.read().unwrap().clone();
+                let previous = current.clone();
                 let mut changed = std::collections::BTreeSet::new();
                 for (key, entry) in previous.0.iter().chain(snapshot.0.iter()) {
                     if previous.0.get(key) != snapshot.0.get(key) {
@@ -133,7 +198,8 @@ fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 let events = changes::diff(&previous, &snapshot);
-                *tree.write().unwrap() = Arc::new(snapshot);
+                *current = Arc::new(snapshot);
+                drop(current);
                 notifications.lock().unwrap().extend(events);
                 refresh.completed(true);
                 // Notify only changed directories, avoiding a refresh/notification loop.
@@ -157,7 +223,9 @@ fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
         io::stdout().flush()?;
     }
+    transfers.stop();
     host.unmount();
+    remove_drive_icon(&letter);
     unsafe {
         SHChangeNotify(
             SHCNE_DRIVEREMOVED,

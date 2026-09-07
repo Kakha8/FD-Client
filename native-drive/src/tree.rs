@@ -4,6 +4,8 @@ use winfsp::filesystem::FileInfo;
 
 #[derive(Clone, Deserialize, PartialEq, Eq)]
 pub struct Entry {
+    #[serde(default)]
+    pub id: u64,
     pub path: String,
     pub directory: bool,
     pub size: u64,
@@ -22,7 +24,7 @@ impl Entry {
             ((ms as i128 + 11644473600000) * 10000).clamp(0, u64::MAX as i128) as u64
         }
         FileInfo {
-            file_attributes: if self.directory { 0x10 } else { 0x1 },
+            file_attributes: if self.directory { 0x10 } else { 0x20 },
             file_size: self.size,
             allocation_size: self.size,
             creation_time: time(self.created),
@@ -34,13 +36,42 @@ impl Entry {
     }
 }
 
+#[derive(Clone)]
 pub struct Tree(pub BTreeMap<String, Entry>);
 
 impl Tree {
+    /// Move the entire subtree, retaining backend IDs and display-name casing.
+    pub fn relocate(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let key = new.to_lowercase();
+        let source = self.0.get(old).ok_or("Source not found")?.clone();
+        if old == "\\" || key == "\\" || (key != old && key.starts_with(&format!("{old}\\"))) {
+            return Err("Cannot move a folder into itself".into());
+        }
+        if key != old && self.0.contains_key(&key) {
+            return Err("Destination exists".into());
+        }
+        if !self.0.get(parent(&key)).is_some_and(|e| e.directory) {
+            return Err("Destination parent not found".into());
+        }
+        let entries: Vec<_> = self
+            .0
+            .iter()
+            .filter(|(path, _)| path.as_str() == old || path.starts_with(&format!("{old}\\")))
+            .map(|(path, entry)| (path.clone(), entry.clone()))
+            .collect();
+        for (path, mut entry) in entries {
+            self.0.remove(&path);
+            entry.path = format!("{new}{}", &entry.path[source.path.len()..]);
+            self.0.insert(entry.path.to_lowercase(), entry);
+        }
+        Ok(())
+    }
+
     pub fn empty() -> Self {
         Self(BTreeMap::from([(
             "\\".into(),
             Entry {
+                id: 0,
                 path: "\\".into(),
                 directory: true,
                 size: 0,
@@ -110,5 +141,45 @@ mod tests {
                 .to_string();
             assert!(Tree::parse(&json).is_err());
         }
+    }
+
+    #[test]
+    fn moves_descendants_preserving_ids_and_case() {
+        let mut tree = Tree::parse(
+            r#"{"entries":[
+            {"id":1,"path":"\\Docs","directory":true,"size":0},
+            {"id":2,"path":"\\Docs\\Report.txt","directory":false,"size":12},
+            {"id":3,"path":"\\Target","directory":true,"size":0}] }"#,
+        )
+        .unwrap();
+        tree.relocate("\\docs", "\\Target\\Docs").unwrap();
+        assert!(!tree.0.contains_key("\\docs"));
+        assert_eq!(tree.0["\\target\\docs\\report.txt"].id, 2);
+        assert_eq!(
+            tree.0["\\target\\docs\\report.txt"].path,
+            "\\Target\\Docs\\Report.txt"
+        );
+        tree.relocate("\\target\\docs", "\\Target\\DOCS").unwrap();
+        assert_eq!(
+            tree.0["\\target\\docs\\report.txt"].path,
+            "\\Target\\DOCS\\Report.txt"
+        );
+    }
+
+    #[test]
+    fn invalid_moves_leave_tree_unchanged() {
+        let mut tree = Tree::parse(
+            r#"{"entries":[
+            {"id":1,"path":"\\Docs","directory":true,"size":0},
+            {"id":2,"path":"\\Docs\\Child","directory":true,"size":0},
+            {"id":3,"path":"\\Target","directory":true,"size":0}] }"#,
+        )
+        .unwrap();
+        let before = tree.0.clone();
+        for target in ["\\Docs\\Child\\Docs", "\\Target", "\\missing\\Docs", "\\"] {
+            assert!(tree.relocate("\\docs", target).is_err());
+            assert!(tree.0 == before);
+        }
+        assert!(tree.relocate("\\", "\\Other").is_err());
     }
 }

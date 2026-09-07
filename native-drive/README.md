@@ -1,13 +1,58 @@
-# SSE metadata virtual drive
+# SSE virtual drive
 
-This Windows-only helper exposes a **read-only, listing-only** WinFsp volume labelled
+This Windows-only helper exposes a WinFsp volume labelled
 `FD Client`. After login, Java fetches `/api/folders/root` and recursively visits
 `/api/folders/{id}`, then sends a metadata snapshot through the helper's private
 stdin pipe. Files and folders, sizes, and available timestamps appear in Explorer.
-No authentication tokens or file contents are sent to the helper. Content reads,
-uploads, and mutations are not supported yet. Before login the drive is empty.
+Explorer supports dragging/copying files and folders **into the drive to upload**
+and **out of the drive to download**. Before login the drive is empty and uploads
+are rejected. Java owns authenticated HTTP; no authentication tokens are sent to
+the helper. Content is exchanged through a private per-mount temporary directory.
 It is separate from the CSE native library so filesystem dependencies do not
 affect the encryption build.
+
+## Transfers
+
+- Downloads use `GET /api/files/{id}` and stage the complete file on first read.
+  Explorer then reads that local file at the requested offsets. Folder copies
+  use normal Windows recursive copying.
+- New files are staged locally as Windows writes them, then uploaded once using
+  `POST /api/files` when the destination handle is cleaned up. Intermediate
+  flushes only flush staging data. Empty files are uploaded too. New directories
+  use `POST /api/folders` and are resolved to their backend IDs before returning.
+- Explorer **New folder**, naming/renaming files and folders, and moving them
+  between folders (including back to the drive root) are supported. Moving a
+  folder retains its entire subtree and backend IDs. Moves use backend operations
+  rather than downloading and uploading the contents again. Move and rename in
+  separate steps when both the destination folder and filename need to change.
+- The drive is presented to Windows as a network volume so Explorer bypasses
+  the local Recycle Bin. **Delete** sends files and folders to the backend trash, where they can be
+  restored; it does not call permanent deletion. Windows recursively deletes
+  children before removing their folder. A server-side nonempty folder is rejected
+  to protect children that were not present in the Explorer listing. A failed
+  delete retains the cached entry and displays an error in Java; refresh to check
+  the server state before retrying after a connection failure.
+- Existing files cannot be overwritten or edited in place. Conflicting destination
+  names, moving a folder into itself/its descendants, and moves of folders with
+  unfinished uploads are rejected. The drive root cannot be renamed or deleted.
+- The Explorer byte progress describes the local copy. The HTTP upload and server
+  processing happen afterward. Windows cleanup cannot return upload errors, so
+  Java displays an upload-failure dialog with the retained local recovery path.
+  Failed transfers are never retried automatically, since a lost HTTP response
+  can occur after a successful server commit. Check the remote folder before retrying.
+- Completed download caches and successful upload staging files are removed.
+  Failed/interrupted uploads remain under `%TEMP%\fd-drive-*\upload-*.part`,
+  with a matching `.name.txt` file containing the original destination path.
+  Cancelled delete-on-close staging files are discarded without uploading.
+- Reported free space is local staging space; the backend separately enforces
+  its limits. A download currently needs enough local space for the entire file.
+  Individual HTTP requests have a 210-second timeout. Login/session changes
+  invalidate pending work; requests already accepted by the server may complete.
+
+Snapshot refreshes and HTTP transfers are serialized per mounted session so an
+older listing cannot hide a newly uploaded file or created folder. Staged files
+remain visible during refresh. Authentication failures require a refreshed
+session before retrying.
 
 ## Prerequisites
 
@@ -68,11 +113,19 @@ if graceful shutdown does not complete within three seconds.
 ```
 
 Wait for `MOUNTED F:` (the letter may differ), then open that drive in Explorer.
-The root is empty until a metadata snapshot is supplied, and writes are rejected. Press Enter in the
+The root is empty until a metadata snapshot is supplied. Without a Java parent,
+transfer requests have no responder; use the smoke tests below. Press Enter in the
 helper terminal to unmount. No disk is formatted and no local folder is mapped
 or copied into this drive.
 
 Run `./native-drive/smoke-test.ps1` from PowerShell for a real mount/unmount test
 with synthetic nested folder metadata, refresh requests, added/deleted entries,
 new nested folders without remounting, Windows folder-created notifications,
-refresh failure cache preservation, sizes, and rejection of content reads.
+refresh failure cache preservation, sizes, and existing-file overwrite protection.
+
+Run `./native-drive/transfer-smoke-test.ps1` for a real WinFsp mount with a mock
+parent (no backend changes). It verifies recursive copies in both directions,
+binary byte equality, nested upload parent IDs, empty files, intermediate flushes,
+cancelled staging, overwrite protection, retained failed-upload data, folder
+creation/renaming, file/folder moves, moves back to root, recursive deletion,
+self-move rejection, and unchanged cached entries after rejected mutations.
