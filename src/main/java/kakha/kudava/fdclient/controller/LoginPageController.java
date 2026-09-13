@@ -225,8 +225,11 @@ public class LoginPageController {
             // Use an explicit size because the original Scene was created with
             // the smaller login-page dimensions and can otherwise clip this
             // layout on displays using DPI scaling.
-            stage.setWidth(850);
-            stage.setHeight(600);
+            javafx.geometry.Rectangle2D available = javafx.stage.Screen
+                    .getScreensForRectangle(stage.getX(), stage.getY(), stage.getWidth(), stage.getHeight())
+                    .getFirst().getVisualBounds();
+            stage.setWidth(Math.min(1100, available.getWidth()));
+            stage.setHeight(Math.min(700, available.getHeight()));
             stage.centerOnScreen();
 
         } catch (IOException exception) {

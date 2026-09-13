@@ -15,6 +15,8 @@ public class HelloApplication extends Application {
         Scene scene = WindowFrame.createScene(stage, fxmlLoader.load(), 460, 600);
         stage.setMinWidth(440);
         stage.setMinHeight(600);
+        // Login and main content share this stage; keep both at their configured sizes.
+        stage.setResizable(false);
         stage.setTitle("FD Client - Sign in");
         stage.setScene(scene);
         stage.show();

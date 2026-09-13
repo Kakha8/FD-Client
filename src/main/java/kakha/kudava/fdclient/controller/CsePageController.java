@@ -148,6 +148,58 @@ public final class CsePageController {
             pendingEnrollment;
 
     private boolean retryStatusCheck;
+    @FXML private Button addFileButton;
+    private LockboxMetadataService.PrivateFile pendingFile;
+    private String progressFilename;
+    private final javafx.beans.property.BooleanProperty encrypting = new javafx.beans.property.SimpleBooleanProperty(false);
+
+    @FXML
+    private void onAddFile(ActionEvent event) {
+        if (isUploadRunning() || encrypting.get()) {
+            showError("Wait for the current operation to finish before adding another file.");
+            return;
+        }
+        selectedFile = null;
+        onBrowse(event);
+        if (selectedFile == null) return;
+        Alert choice = new Alert(Alert.AlertType.CONFIRMATION);
+        choice.initOwner(lockboxFileTable.getScene().getWindow());
+        choice.initStyle(javafx.stage.StageStyle.TRANSPARENT);
+        choice.setTitle("Store in Lockbox");
+        choice.setHeaderText(null);
+        choice.setGraphic(null);
+        javafx.scene.control.DialogPane pane = choice.getDialogPane();
+        pane.getStylesheets().add(Objects.requireNonNull(getClass().getResource(
+                "/kakha/kudava/fdclient/window-frame.css")).toExternalForm());
+        pane.getStyleClass().add("lockbox-delete-dialog");
+        pane.setPrefWidth(460);
+        pane.setMinHeight(javafx.scene.layout.Region.USE_PREF_SIZE);
+        Label heading = new Label("Where should this file be stored?");
+        heading.getStyleClass().add("delete-heading");
+        heading.setWrapText(true);
+        Label description = new Label("Local keeps an encrypted copy on this device.\nBoth also uploads an encrypted copy to the web.");
+        description.setWrapText(true);
+        description.getStyleClass().add("delete-description");
+        Label filename = new Label(selectedFile.getFileName().toString());
+        filename.setMaxWidth(Double.MAX_VALUE);
+        filename.setTooltip(new javafx.scene.control.Tooltip(filename.getText()));
+        filename.getStyleClass().add("delete-file");
+        javafx.scene.layout.VBox body = new javafx.scene.layout.VBox(14, heading, description, filename);
+        body.getStyleClass().add("delete-body");
+        pane.setContent(body);
+        javafx.scene.control.ButtonType local = new javafx.scene.control.ButtonType("Local",
+                javafx.scene.control.ButtonBar.ButtonData.NO);
+        javafx.scene.control.ButtonType both = new javafx.scene.control.ButtonType("Both",
+                javafx.scene.control.ButtonBar.ButtonData.YES);
+        pane.getButtonTypes().setAll(javafx.scene.control.ButtonType.CANCEL, local, both);
+        choice.setOnShown(e -> pane.getScene().setFill(javafx.scene.paint.Color.TRANSPARENT));
+        javafx.scene.control.ButtonType selected = choice.showAndWait().orElse(javafx.scene.control.ButtonType.CANCEL);
+        if (selected != local && selected != both) return;
+        uploadAfterEncryption = selected == both;
+        onEncrypt(event);
+    }
+
+    private boolean uploadAfterEncryption;
 
     public void setAuthService(AuthService authService) {
         this.authService = Objects.requireNonNull(
@@ -165,7 +217,38 @@ public final class CsePageController {
     @FXML
     private void initialize() {
         fileSelectField.setEditable(false);
+        addFileButton.disableProperty().bind(lockboxContentPane.disableProperty().or(encrypting));
+        nameColumn.setCellFactory(column -> new TableCell<>() {
+            @Override protected void updateItem(String name, boolean empty) {
+                super.updateItem(name, empty);
+                setText(null);
+                setGraphic(null);
+                if (empty || name == null) return;
+                Label label = new Label(name);
+                label.setMinWidth(0);
+                label.setMaxWidth(Double.MAX_VALUE);
+                javafx.scene.layout.HBox.setHgrow(label, javafx.scene.layout.Priority.ALWAYS);
+                javafx.scene.layout.HBox row = new javafx.scene.layout.HBox(12, label);
+                row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+                if (name.equals(progressFilename)) {
+                    ProgressBar progress = new ProgressBar();
+                    progress.setPrefWidth(90);
+                    progress.setMinWidth(90);
+                    progress.progressProperty().bind(cseProgressBar.progressProperty());
+                    row.getChildren().add(progress);
+                }
+                setGraphic(row);
+            }
+        });
+        cseProgressBar.progressProperty().addListener((o, before, value) -> {
+            if (value.doubleValue() == 1) progressFilename = null;
+            lockboxFileTable.refresh();
+        });
         cseProgressBar.setProgress(0);
+        cseProgressBar.visibleProperty().bind(cseProgressBar.progressProperty().isNotEqualTo(0)
+                .and(cseProgressBar.progressProperty().lessThan(1)));
+        cseProgressBar.managedProperty().bind(cseProgressBar.visibleProperty());
+        lockboxFileTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
 
         hideUploadButton();
         hideCancelButton();
@@ -195,6 +278,31 @@ public final class CsePageController {
             }
             return new ReadOnlyStringWrapper(file.locationDisplayName());
         });
+        locationColumn.setCellFactory(column -> new TableCell<>() {
+            @Override
+            protected void updateItem(String location, boolean empty) {
+                super.updateItem(location, empty);
+                setText(null);
+                setGraphic(null);
+                setTooltip(null);
+                setAccessibleText(null);
+                if (empty || location == null) return;
+                javafx.scene.layout.HBox icons = new javafx.scene.layout.HBox(12);
+                icons.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+                if (location.startsWith("Local")) {
+                    icons.getChildren().add(locationIcon(
+                            "M3 4h18v13H3Z M8 21h8 M12 17v4", "Stored on this device"));
+                }
+                if (location.startsWith("Web") || location.startsWith("Local + Web")) {
+                    icons.getChildren().add(locationIcon(
+                            "M6 19a4 4 0 0 1-1-7.87A7 7 0 0 1 18.6 9A5 5 0 0 1 18 19Z",
+                            "Stored on the web"));
+                }
+                setGraphic(icons);
+                setTooltip(new javafx.scene.control.Tooltip(location));
+                setAccessibleText(location);
+            }
+        });
         actionsColumn.setCellFactory(column -> new TableCell<>() {
             private final MenuButton menu = new MenuButton("⋮");
             private final MenuItem export = new MenuItem("Export");
@@ -208,7 +316,9 @@ public final class CsePageController {
             private final MenuItem uploadVersion = new MenuItem("Upload new version…");
             private final MenuItem versionHistory = new MenuItem("Version history…");
             {
-                menu.setStyle("-fx-font-size: 17px; -fx-padding: 0 6 0 6;");
+                menu.getStyleClass().add("lockbox-row-menu");
+                menu.setAccessibleText("File actions");
+                setAlignment(javafx.geometry.Pos.CENTER);
                 export.setOnAction(event -> exportLocalArtifacts(getTableRow().getItem()));
                 decryptExport.setOnAction(event -> decryptAndExport(getTableRow().getItem(), menu));
                 upload.setOnAction(event -> uploadLocalArtifacts(getTableRow().getItem(), menu));
@@ -230,6 +340,11 @@ public final class CsePageController {
                 LockboxMetadataService.PrivateFile file =
                         empty || getTableRow() == null ? null : getTableRow().getItem();
                 menu.getItems().clear();
+                if (file == pendingFile) {
+                    setGraphic(null);
+                    setText(null);
+                    return;
+                }
                 if (file != null) {
                     menu.getItems().add(decryptExport);
                 }
@@ -554,6 +669,7 @@ public final class CsePageController {
         });
 
         boolean ready = state == LockboxUiState.READY;
+        lockboxStatusLabel.pseudoClassStateChanged(javafx.css.PseudoClass.getPseudoClass("ready"), ready);
         refreshLockboxBtn.setVisible(ready);
         refreshLockboxBtn.setManaged(ready);
         refreshLockboxBtn.setDisable(!ready);
@@ -634,7 +750,13 @@ public final class CsePageController {
         hideUploadButton();
         hideCancelButton();
 
-        encryptButton.setDisable(true);
+        pendingFile = new LockboxMetadataService.PrivateFile(null, java.util.UUID.randomUUID(), 1,
+                inputFile.getFileName().toString(), null, 0, null, null,
+                LockboxMetadataService.Location.LOCAL, null,
+                LockboxMetadataService.AccessKind.OWNED, null, null, null);
+        progressFilename = pendingFile.filename();
+        lockboxFileTable.getItems().add(0, pendingFile);
+        encrypting.set(true);
         cseProgressBar.setProgress(0);
 
         Task<CseEncryptionService.V3Artifacts> encryptionTask = new Task<>() {
@@ -650,19 +772,27 @@ public final class CsePageController {
             stopProgressPolling();
 
             cseProgressBar.setProgress(1);
-            encryptButton.setDisable(false);
+            encrypting.set(false);
+            lockboxFileTable.getItems().remove(pendingFile);
+            pendingFile = null;
 
             encryptedArtifacts = encryptionTask.getValue();
-            showUploadButton();
-            showEncryptionSuccess(encryptedArtifacts);
             loadPrivateFileNames();
+            if (uploadAfterEncryption) {
+                uploadAfterEncryption = false;
+                onUpload(event);
+            }
         });
 
         encryptionTask.setOnFailed(workerEvent -> {
             stopProgressPolling();
 
             cseProgressBar.setProgress(0);
-            encryptButton.setDisable(false);
+            encrypting.set(false);
+            lockboxFileTable.getItems().remove(pendingFile);
+            pendingFile = null;
+            progressFilename = null;
+            lockboxFileTable.refresh();
             encryptedArtifacts = null;
             hideUploadButton();
 
@@ -724,6 +854,8 @@ public final class CsePageController {
         uploadCancelledByUser = false;
 
         uploadBtn.setDisable(true);
+        progressFilename = selectedFile == null ? null : selectedFile.getFileName().toString();
+        lockboxFileTable.refresh();
         hideUploadButton();
         showCancelButton();
         cseProgressBar.setProgress(0);
@@ -796,6 +928,8 @@ public final class CsePageController {
 
         activeUpload = null;
         hideCancelButton();
+        progressFilename = null;
+        lockboxFileTable.refresh();
 
         if (throwable != null) {
             cseProgressBar.setProgress(0);
@@ -902,6 +1036,7 @@ public final class CsePageController {
                     lockboxFileTable.setDisable(false);
                     refreshLockboxBtn.setDisable(false);
                     lockboxFileTable.getItems().setAll(files);
+                    if (pendingFile != null) lockboxFileTable.getItems().add(0, pendingFile);
                     lockboxFileTable.setPlaceholder(new Label("No Lockbox files."));
                 }));
     }
@@ -1197,6 +1332,8 @@ public final class CsePageController {
         }
 
         final CseEncryptionService.V3Artifacts artifacts;
+        progressFilename = file.filename();
+        lockboxFileTable.refresh();
         try {
             artifacts = encryptionService.loadLocalArtifacts(
                     file.clientFileId(),
@@ -1228,6 +1365,8 @@ public final class CsePageController {
             if (activeUpload != uploadFuture) return;
             activeUpload = null;
             hideCancelButton();
+            progressFilename = null;
+            lockboxFileTable.refresh();
 
             if (error != null) {
                 cseProgressBar.setProgress(0);
@@ -1574,8 +1713,7 @@ public final class CsePageController {
         if (file == null || file.localContainerPath() == null) return;
         if (!confirmDeletion(
                 "Delete local copy?",
-                "Delete the local encrypted copy of " + file.filename() + "?",
-                "This removes its container, manifest, and signature from this device."
+                file.filename()
         )) return;
 
         menu.setDisable(true);
@@ -1601,8 +1739,7 @@ public final class CsePageController {
         }
         if (!confirmDeletion(
                 "Delete web copy?",
-                "Permanently delete the web copy of " + file.filename() + "?",
-                "The encrypted container, manifest, and signature will be removed from the server."
+                file.filename()
         )) return;
 
         menu.setDisable(true);
@@ -1725,19 +1862,74 @@ public final class CsePageController {
                 }));
     }
 
+    private javafx.scene.layout.StackPane locationIcon(String path, String description) {
+        javafx.scene.shape.SVGPath shape = new javafx.scene.shape.SVGPath();
+        shape.setContent(path);
+        shape.getStyleClass().add("lockbox-location-icon");
+        javafx.scene.layout.StackPane icon = new javafx.scene.layout.StackPane(shape);
+        icon.setMinSize(24, 24);
+        icon.setPrefSize(24, 24);
+        icon.setMaxSize(24, 24);
+        icon.setAccessibleText(description);
+        return icon;
+    }
+
     private boolean confirmDeletion(
             String title,
-            String header,
-            String content
+            String filename
     ) {
         Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.initStyle(javafx.stage.StageStyle.TRANSPARENT);
         alert.setTitle(title);
-        alert.setHeaderText(header);
-        alert.setContentText(content);
+        alert.setHeaderText(null);
+        alert.setContentText(null);
+        alert.setGraphic(null);
+        javafx.scene.control.DialogPane pane = alert.getDialogPane();
+        pane.getStylesheets().add(Objects.requireNonNull(getClass().getResource(
+                "/kakha/kudava/fdclient/window-frame.css")).toExternalForm());
+        pane.getStyleClass().add("lockbox-delete-dialog");
+        javafx.scene.shape.SVGPath trash = new javafx.scene.shape.SVGPath();
+        trash.setContent("M3 6h18 M8 6V4h8v2 M6 6l1 15h10l1-15 M10 10v7 M14 10v7");
+        trash.getStyleClass().add("delete-symbol");
+        javafx.scene.layout.StackPane badge = new javafx.scene.layout.StackPane(trash);
+        badge.getStyleClass().add("delete-badge");
+        Label heading = new Label(title);
+        heading.getStyleClass().add("delete-heading");
+        Label description = new Label(title.contains("local")
+                ? "Remove this encrypted file from this device?"
+                : "Permanently remove this encrypted file from the server?");
+        description.setWrapText(true);
+        description.getStyleClass().add("delete-description");
+        javafx.scene.layout.VBox text = new javafx.scene.layout.VBox(6, heading, description);
+        text.setMinWidth(0);
+        javafx.scene.layout.HBox.setHgrow(text, javafx.scene.layout.Priority.ALWAYS);
+        javafx.scene.layout.HBox intro = new javafx.scene.layout.HBox(14, badge, text);
+        intro.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        Label fileLabel = new Label(filename);
+        fileLabel.setMaxWidth(Double.MAX_VALUE);
+        fileLabel.setTooltip(new javafx.scene.control.Tooltip(filename));
+        fileLabel.getStyleClass().add("delete-file");
+        javafx.scene.layout.VBox body = new javafx.scene.layout.VBox(18, intro, fileLabel);
+        body.getStyleClass().add("delete-body");
+        pane.setContent(body);
+        pane.setPrefWidth(440);
+        pane.setMinHeight(javafx.scene.layout.Region.USE_PREF_SIZE);
+        javafx.scene.control.ButtonType delete = new javafx.scene.control.ButtonType(
+                "Delete", javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        pane.getButtonTypes().setAll(javafx.scene.control.ButtonType.CANCEL, delete);
+        Button deleteButton = (Button) pane.lookupButton(delete);
+        deleteButton.getStyleClass().add("delete-confirm-button");
+        deleteButton.setDefaultButton(false);
+        Button cancelButton = (Button) pane.lookupButton(javafx.scene.control.ButtonType.CANCEL);
+        cancelButton.setDefaultButton(true);
+        alert.setOnShown(event -> {
+            pane.getScene().setFill(javafx.scene.paint.Color.TRANSPARENT);
+            cancelButton.requestFocus();
+        });
         Window window = lockboxFileTable.getScene().getWindow();
         if (window != null) alert.initOwner(window);
         return alert.showAndWait()
-                .filter(button -> button == javafx.scene.control.ButtonType.OK)
+                .filter(button -> button == delete)
                 .isPresent();
     }
 
@@ -1774,8 +1966,6 @@ public final class CsePageController {
 
     private void showUploadButton() {
         uploadBtn.setDisable(false);
-        uploadBtn.setVisible(true);
-        uploadBtn.setManaged(true);
     }
 
     private void hideUploadButton() {
@@ -1844,21 +2034,37 @@ public final class CsePageController {
         );
 
         alert.setTitle("Upload complete");
-        alert.setHeaderText(
-                "The encrypted file was uploaded to Lockbox."
-        );
-        alert.setContentText(
-                "Server file ID: "
-                        + result.id()
-                        + "\nClient file ID: "
-                        + result.clientFileId()
-                        + "\nRevision: "
-                        + result.revision()
-                        + "\nContainer size: "
-                        + result.containerSize()
-                        + " bytes"
-        );
-
+        alert.initStyle(javafx.stage.StageStyle.TRANSPARENT);
+        alert.initOwner(lockboxFileTable.getScene().getWindow());
+        alert.setHeaderText(null);
+        alert.setGraphic(null);
+        javafx.scene.control.DialogPane pane = alert.getDialogPane();
+        pane.getStylesheets().add(Objects.requireNonNull(getClass().getResource(
+                "/kakha/kudava/fdclient/window-frame.css")).toExternalForm());
+        pane.getStyleClass().addAll("lockbox-delete-dialog", "lockbox-success-dialog");
+        pane.setPrefWidth(420);
+        pane.setMinHeight(javafx.scene.layout.Region.USE_PREF_SIZE);
+        javafx.scene.shape.SVGPath check = new javafx.scene.shape.SVGPath();
+        check.setContent("M5 12l4 4L19 6");
+        check.getStyleClass().add("success-symbol");
+        javafx.scene.layout.StackPane badge = new javafx.scene.layout.StackPane(check);
+        badge.getStyleClass().add("success-badge");
+        Label heading = new Label("Upload complete");
+        heading.getStyleClass().add("delete-heading");
+        Label description = new Label("Your encrypted file is now in Lockbox.");
+        description.setWrapText(true);
+        description.getStyleClass().add("delete-description");
+        javafx.scene.layout.VBox text = new javafx.scene.layout.VBox(6, heading, description);
+        text.setMinWidth(0);
+        javafx.scene.layout.HBox body = new javafx.scene.layout.HBox(14, badge, text);
+        body.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        body.getStyleClass().add("delete-body");
+        pane.setContent(body);
+        javafx.scene.control.ButtonType done = new javafx.scene.control.ButtonType(
+                "Done", javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        pane.getButtonTypes().setAll(done);
+        pane.lookupButton(done).getStyleClass().add("success-done-button");
+        alert.setOnShown(event -> pane.getScene().setFill(javafx.scene.paint.Color.TRANSPARENT));
         alert.showAndWait();
     }
 

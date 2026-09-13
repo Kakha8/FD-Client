@@ -2,6 +2,8 @@
 
 <?import javafx.scene.control.Button?>
 <?import javafx.scene.control.Label?>
+<?import javafx.scene.control.TextField?>
+<?import javafx.scene.control.ScrollPane?>
 <?import javafx.scene.control.Tooltip?>
 <?import javafx.scene.control.MenuButton?>
 <?import javafx.scene.control.MenuItem?>
@@ -49,12 +51,31 @@
             <Label fx:id="driveStatusLabel" maxWidth="Infinity" minWidth="0" wrapText="true" text="SSE drive is not mounted." />
          </children>
       </VBox>
+      <StackPane fx:id="lockboxContent" minWidth="0" visible="false" managed="false" style="-fx-padding: 80 24 24 24;">
+         <ScrollPane fx:id="lockboxScroll" fitToWidth="true" fitToHeight="true" styleClass="lockbox-scroll" />
+      </StackPane>
       <VBox fx:id="sharedContent" spacing="16" minWidth="0" styleClass="content-pane" visible="false" managed="false">
          <Label text="Shared with me" style="-fx-font-size: 22px; -fx-text-fill: #e5e7eb;" />
          <Label text="The shared-files view is not connected yet." wrapText="true" />
       </VBox>
-      <HBox spacing="10" alignment="CENTER_RIGHT" maxWidth="-Infinity" maxHeight="42" StackPane.alignment="TOP_RIGHT">
-         <StackPane.margin><Insets top="14" right="24" /></StackPane.margin>
+      <VBox fx:id="settingsContent" spacing="16" minWidth="0" styleClass="content-pane" visible="false" managed="false">
+         <Label text="Settings" style="-fx-font-size: 22px; -fx-text-fill: #e5e7eb;" />
+         <Label text="Authenticator" style="-fx-font-size: 16px; -fx-text-fill: #e5e7eb;" />
+         <Button onAction="#onTotpEnroll" text="Enroll ESP32 authenticator" />
+         <Button onAction="#onTotpTest" text="Test ESP32 authenticator" />
+      </VBox>
+      <HBox spacing="14" alignment="CENTER_RIGHT" maxHeight="48" StackPane.alignment="TOP_RIGHT">
+         <StackPane.margin><Insets top="14" right="24" left="48" /></StackPane.margin>
+         <StackPane minWidth="0" HBox.hgrow="ALWAYS">
+            <TextField fx:id="searchField" promptText="Search files…" accessibleText="Search files" minWidth="0" prefWidth="520" styleClass="global-search" />
+            <SVGPath content="M17 10a7 7 0 1 0-14 0a7 7 0 1 0 14 0 M15 15l6 6" styleClass="nav-icon" mouseTransparent="true" StackPane.alignment="CENTER_LEFT">
+               <StackPane.margin><Insets left="16" /></StackPane.margin>
+            </SVGPath>
+         </StackPane>
+         <Button mnemonicParsing="false" onAction="#onPauseSync" styleClass="notification-button" accessibleText="Pause syncing">
+            <graphic><SVGPath content="M21 12a9 9 0 1 0-18 0a9 9 0 1 0 18 0 M9 8v8 M15 8v8" styleClass="nav-icon" /></graphic>
+            <tooltip><Tooltip text="Pause syncing" /></tooltip>
+         </Button>
          <Button mnemonicParsing="false" onAction="#onNotifications" styleClass="notification-button" accessibleText="Notifications">
             <graphic><SVGPath content="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4" styleClass="nav-icon" /></graphic>
             <tooltip><Tooltip text="Notifications" /></tooltip>
@@ -62,7 +83,7 @@
       <MenuButton fx:id="userMenu" styleClass="user-menu" accessibleText="Open account menu" popupSide="BOTTOM" maxWidth="42" maxHeight="42">
          <graphic><Label fx:id="userInitials" text="U" styleClass="user-avatar" /></graphic>
          <items>
-            <CustomMenuItem hideOnClick="false">
+            <CustomMenuItem hideOnClick="false" styleClass="account-header-item">
                <content>
                   <HBox spacing="11" alignment="CENTER_LEFT" styleClass="user-account">
                      <Label fx:id="accountInitials" text="U" styleClass="user-avatar, user-avatar-large" />
@@ -74,7 +95,11 @@
                </content>
             </CustomMenuItem>
             <SeparatorMenuItem />
-            <MenuItem text="Sign out" onAction="#onLogout">
+            <MenuItem text="Settings" onAction="#onSettings">
+               <graphic><SVGPath styleClass="nav-icon" content="M15 12a3 3 0 1 0-6 0a3 3 0 1 0 6 0 M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.1A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3V9.6h.1A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1v4h-.1A1.7 1.7 0 0 0 19.4 15Z" /></graphic>
+            </MenuItem>
+            <SeparatorMenuItem />
+            <MenuItem text="Sign out" onAction="#onLogout" styleClass="user-signout">
                <graphic><SVGPath content="M10 17l5-5-5-5 M15 12H3 M14 4h4a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3h-4" styleClass="nav-icon" /></graphic>
             </MenuItem>
          </items>

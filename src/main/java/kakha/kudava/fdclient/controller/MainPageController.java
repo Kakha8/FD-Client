@@ -6,7 +6,6 @@ import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Node;
 import javafx.scene.Parent;
-import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
@@ -29,8 +28,12 @@ import java.util.Objects;
 public class MainPageController {
     private AuthService authService;
     @FXML private Label driveStatusLabel;
+    @FXML private javafx.scene.control.TextField searchField;
     @FXML private Button openDriveButton;
     @FXML private VBox sidebar;
+    @FXML private StackPane lockboxContent;
+    @FXML private javafx.scene.control.ScrollPane lockboxScroll;
+    @FXML private VBox settingsContent;
     @FXML private javafx.scene.control.MenuButton userMenu;
     @FXML private Label userInitials;
     @FXML private Label accountInitials;
@@ -43,6 +46,17 @@ public class MainPageController {
 
     @FXML
     private void initialize() {
+        Parent page = sidebar.getParent();
+        page.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, event -> {
+            if (!searchField.isFocused()) return;
+            Node target = event.getTarget() instanceof Node node ? node : null;
+            for (Node ancestor = target; ancestor != null; ancestor = ancestor.getParent()) {
+                if (ancestor == searchField) return;
+            }
+            // Release focus on blank areas too, without consuming clicks on other controls.
+            searchField.deselect();
+            page.requestFocus();
+        });
         sidebar.getChildren().stream().filter(Button.class::isInstance).map(Button.class::cast).forEach(button -> {
             StackPane icon = new StackPane(button.getGraphic());
             icon.setMinSize(22, 22);
@@ -72,6 +86,10 @@ public class MainPageController {
     @FXML private void onSharedWithMe() { showSharedContent(true); }
 
     private void showSharedContent(boolean shared) {
+        lockboxContent.setVisible(false);
+        lockboxContent.setManaged(false);
+        settingsContent.setVisible(false);
+        settingsContent.setManaged(false);
         homeContent.setVisible(!shared);
         homeContent.setManaged(!shared);
         sharedContent.setVisible(shared);
@@ -81,6 +99,28 @@ public class MainPageController {
     @FXML
     private void onNotifications() {
         new Alert(Alert.AlertType.INFORMATION, "You’re all caught up.").showAndWait();
+    }
+
+    @FXML
+    private void onPauseSync() {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.initOwner(userMenu.getScene().getWindow());
+        alert.setTitle("Pause syncing");
+        alert.setHeaderText("Pausing sync is not available yet");
+        alert.setContentText("The drive service does not support pausing transfers yet.");
+        alert.showAndWait();
+    }
+
+    @FXML
+    private void onSettings() {
+        lockboxContent.setVisible(false);
+        lockboxContent.setManaged(false);
+        homeContent.setVisible(false);
+        homeContent.setManaged(false);
+        sharedContent.setVisible(false);
+        sharedContent.setManaged(false);
+        settingsContent.setVisible(true);
+        settingsContent.setManaged(true);
     }
 
     public void setAuthService(AuthService authService) {
@@ -203,6 +243,18 @@ public class MainPageController {
             );
         }
 
+        if (lockboxScroll.getContent() == null) loadLockbox();
+        homeContent.setVisible(false);
+        homeContent.setManaged(false);
+        sharedContent.setVisible(false);
+        sharedContent.setManaged(false);
+        settingsContent.setVisible(false);
+        settingsContent.setManaged(false);
+        lockboxContent.setVisible(true);
+        lockboxContent.setManaged(true);
+    }
+
+    private void loadLockbox() throws IOException {
         FXMLLoader loader = new FXMLLoader(
                 Objects.requireNonNull(
                         getClass().getResource(
@@ -221,11 +273,7 @@ public class MainPageController {
          * Pass the exact same AuthService instance that logged in.
          * It contains the in-memory access token.
          */
+        lockboxScroll.setContent(root);
         csePageController.setAuthService(authService);
-
-        Stage stage = new Stage();
-        stage.setTitle("Lockbox Encryption");
-        stage.setScene(new Scene(root));
-        stage.show();
     }
 }
