@@ -11,4 +11,5 @@ module kakha.kudava.fdclient {
     exports kakha.kudava.fdclient;
     exports kakha.kudava.fdclient.controller;
     opens kakha.kudava.fdclient.controller to javafx.fxml;
+    opens kakha.kudava.fdclient.service to com.sun.jna;
 }

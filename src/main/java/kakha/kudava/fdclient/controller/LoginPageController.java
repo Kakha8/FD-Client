@@ -41,6 +41,7 @@ public class LoginPageController {
     @FXML private TextField codeField;
     @FXML private Button startAgainButton;
     private boolean mfaMode;
+    private boolean securityKeyMode;
 
     private final AuthService authService = new AuthService();
 
@@ -78,7 +79,7 @@ public class LoginPageController {
 
     @FXML
     private void onLogin(ActionEvent event) {
-        if (mfaMode) { verifyMfa(); return; }
+        if (mfaMode) { if (securityKeyMode) verifySecurityKey(); else verifyMfa(); return; }
         String username = usernameField.getText().trim();
         String password = passwordField.getText();
 
@@ -102,7 +103,7 @@ public class LoginPageController {
                             }
 
                             if (result.mfaRequired()) {
-                                showMfaPane();
+                                showMfaPane(result.method());
                                 return;
                             }
                             openMainPage();
@@ -110,27 +111,37 @@ public class LoginPageController {
                 );
     }
 
-    private void showMfaPane() {
+    private void showMfaPane(String method) {
         mfaMode = true;
+        securityKeyMode = "webauthn".equals(method);
         credentialsPane.setVisible(false);
         credentialsPane.setManaged(false);
         mfaPane.setVisible(true);
         mfaPane.setManaged(true);
+        codeField.setVisible(!securityKeyMode);
+        codeField.setManaged(!securityKeyMode);
+        codeLabel.setVisible(!securityKeyMode);
+        codeLabel.setManaged(!securityKeyMode);
+        codeHelp.setVisible(!securityKeyMode);
+        codeHelp.setManaged(!securityKeyMode);
         startAgainButton.setVisible(true);
         startAgainButton.setManaged(true);
         eyebrowLabel.setText("TWO-STEP SIGN IN");
         headingLabel.setText("Verify your identity");
-        descriptionLabel.setText("Enter the six-digit code shown on your authenticator device.");
+        descriptionLabel.setText(securityKeyMode
+                ? "Use your registered security key to finish signing in. Windows will ask for its PIN and approval."
+                : "Enter the six-digit code shown on your authenticator device.");
         accountLabel.setText("Signing in as " + usernameField.getText().trim());
         errorLabel.setText("");
         setLoginControlsDisabled(false);
-        codeField.requestFocus();
+        if (securityKeyMode) loginButton.requestFocus(); else codeField.requestFocus();
     }
 
     @FXML
     private void onStartAgain() {
         authService.cancelMfa();
         mfaMode = false;
+        securityKeyMode = false;
         passwordField.clear();
         codeField.clear();
         credentialsPane.setVisible(true);
@@ -166,6 +177,21 @@ public class LoginPageController {
             openMainPage();
         }));
     }
+    @FXML private Label codeLabel;
+    @FXML private Label codeHelp;
+
+    private void verifySecurityKey() {
+        setLoginControlsDisabled(true);
+        errorLabel.setText("");
+        authService.completeWebAuthn().whenComplete((token, error) -> Platform.runLater(() -> {
+            setLoginControlsDisabled(false);
+            if (error != null) {
+                showError(getErrorMessage(error));
+                return;
+            }
+            openMainPage();
+        }));
+    }
     private String getErrorMessage(Throwable error) {
         Throwable cause = error;
 
@@ -190,7 +216,7 @@ public class LoginPageController {
         codeField.setDisable(disabled);
         startAgainButton.setDisable(disabled);
         loginButton.setText(disabled ? (mfaMode ? "Verifying..." : "Signing in...")
-                : (mfaMode ? "Verify and sign in" : "Sign in"));
+                : (mfaMode ? (securityKeyMode ? "Use security key" : "Verify and sign in") : "Sign in"));
     }
 
     private void openMainPage() {

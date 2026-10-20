@@ -25,6 +25,26 @@ class AuthServiceMfaTest {
         assertTrue(auth.completeMfa("012345").isCompletedExceptionally());
     }
 
+    @Test void securityKeyChallengeRequiresWebAuthnRatherThanTotp() {
+        String payload = challenge(Instant.now().plusSeconds(180)).replace("\"mfaRequired\":true",
+                "\"method\":\"webauthn\",\"mfaRequired\":true");
+        var result = auth.handleInitialLoginResponse(response(200, payload));
+        assertEquals("webauthn", result.method());
+        assertTrue(result.mfaRequired());
+        assertFalse(auth.isAuthenticated());
+        assertTrue(auth.completeMfa("123456").isCompletedExceptionally());
+        auth.cancelMfa();
+        assertTrue(auth.completeWebAuthn().isCompletedExceptionally());
+    }
+
+    @Test void unknownMfaMethodFailsClosed() {
+        String payload = challenge(Instant.now().plusSeconds(180)).replace("\"mfaRequired\":true",
+                "\"method\":\"unknown\",\"mfaRequired\":true");
+        assertThrows(AuthService.AuthException.class,
+                () -> auth.handleInitialLoginResponse(response(200, payload)));
+        assertFalse(auth.isAuthenticated());
+    }
+
     @Test void malformedOrExpiredChallengesFailClosedWithoutLeakingBody() {
         for (String body : List.of(challenge(Instant.EPOCH), "{\"mfaRequired\":true,\"challengeToken\":\"private-value\"}",
                 "{\"mfaRequired\":true,broken-private-value")) {

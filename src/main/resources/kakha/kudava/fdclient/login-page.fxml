@@ -22,9 +22,9 @@
    </VBox>
    <VBox fx:id="mfaPane" spacing="8" styleClass="fields" visible="false" managed="false">
     <Label fx:id="accountLabel" styleClass="field-label" wrapText="true"/>
-    <Label text="Authenticator code" labelFor="$codeField" styleClass="field-label"/>
+    <Label fx:id="codeLabel" text="Authenticator code" labelFor="$codeField" styleClass="field-label"/>
     <TextField fx:id="codeField" promptText="000000" styleClass="totp-code"/>
-    <Label text="Use a fresh code. Codes used to register the device cannot be reused." styleClass="mfa-help" wrapText="true"/>
+    <Label fx:id="codeHelp" text="Use a fresh code. Codes used to register the device cannot be reused." styleClass="mfa-help" wrapText="true"/>
    </VBox>
    <Label fx:id="errorLabel" styleClass="login-message" wrapText="true" maxWidth="Infinity" visible="false" managed="false"/>
    <Button fx:id="loginButton" text="Sign in" onAction="#onLogin" defaultButton="true" maxWidth="Infinity" styleClass="primary-button"><VBox.margin><Insets top="24"/></VBox.margin></Button>

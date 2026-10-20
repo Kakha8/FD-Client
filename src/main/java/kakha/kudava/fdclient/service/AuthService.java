@@ -75,11 +75,16 @@ public final class AuthService {
     private volatile String mfaChallenge;
     private volatile Instant mfaExpiresAt;
 
-    public record LoginResult(boolean mfaRequired) {}
+    private volatile String mfaMethod;
+
+    public record LoginResult(boolean mfaRequired, String method) {
+        public LoginResult(boolean mfaRequired) { this(mfaRequired, mfaRequired ? "totp" : ""); }
+    }
 
     public void cancelMfa() {
         mfaChallenge = null;
         mfaExpiresAt = null;
+        mfaMethod = null;
     }
 
     public CompletableFuture<LoginResult> login(
@@ -145,14 +150,17 @@ public final class AuthService {
                 JsonNode json = objectMapper.readTree(response.body());
                 if (json.path("mfaRequired").asBoolean(false)) {
                     String challenge = json.path("challengeToken").asText("");
+                    String method = json.path("method").asText("totp");
                     Instant expiry = Instant.parse(json.path("expiresAt").asText(""));
-                    if (challenge.isBlank() || !expiry.isAfter(Instant.now()) || json.has("accessToken"))
+                    if (challenge.isBlank() || !expiry.isAfter(Instant.now()) || json.has("accessToken")
+                            || !(method.equals("totp") || method.equals("webauthn")))
                         throw new AuthException("The server returned an invalid MFA challenge.");
                     // A password challenge must never activate an account or retain old credentials.
                     clearLocalSession();
                     mfaChallenge = challenge;
                     mfaExpiresAt = expiry;
-                    return new LoginResult(true);
+                    mfaMethod = method;
+                    return new LoginResult(true, method);
                 }
             } catch (Exception ignored) {
                 cancelMfa();
@@ -164,6 +172,8 @@ public final class AuthService {
     }
 
     public CompletableFuture<String> completeMfa(String code) {
+        if (!"totp".equals(mfaMethod))
+            return CompletableFuture.failedFuture(new AuthException("This account requires a security key."));
         String challenge = mfaChallenge;
         Instant expiry = mfaExpiresAt;
         if (challenge == null || expiry == null || !expiry.isAfter(Instant.now())) {
@@ -180,9 +190,62 @@ public final class AuthService {
         return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString()).thenApply(this::handleMfaResponse);
     }
 
+    public CompletableFuture<String> completeWebAuthn() {
+        String challenge = mfaChallenge;
+        Instant expiry = mfaExpiresAt;
+        if (!"webauthn".equals(mfaMethod) || challenge == null || expiry == null
+                || !expiry.isAfter(Instant.now())) {
+            cancelMfa();
+            return CompletableFuture.failedFuture(new AuthException("Security-key challenge expired. Start again."));
+        }
+        String origin = BackendConfig.webAuthnOrigin();
+        ObjectNode start = objectMapper.createObjectNode().put("challengeToken", challenge);
+        HttpRequest optionsRequest = HttpRequest.newBuilder(AUTH_URI.resolve("webauthn/options"))
+                .timeout(Duration.ofSeconds(20)).header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(start.toString())).build();
+        return httpClient.sendAsync(optionsRequest, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    if (response.statusCode() != 200)
+                        throw new AuthException("Could not start security-key verification. Start again.");
+                    try {
+                        JsonNode options = objectMapper.readTree(response.body());
+                        UUID requestId = UUID.fromString(options.path("requestId").asText());
+                        Instant deadline = Instant.parse(options.path("expiresAt").asText());
+                        if (!deadline.isAfter(Instant.now()) || !options.path("publicKey").isObject())
+                            throw new IllegalArgumentException();
+                        return new WebAuthnOptions(requestId, options.get("publicKey"));
+                    } catch (Exception error) {
+                        throw new AuthException("The server returned invalid security-key options.");
+                    }
+                })
+                .thenApplyAsync(options -> {
+                    ObjectNode credential = WindowsWebAuthn.getAssertion(options.publicKey(), origin);
+                    return new WebAuthnResult(options.requestId(), credential);
+                })
+                .thenCompose(result -> {
+                    if (!challenge.equals(mfaChallenge) || !expiry.isAfter(Instant.now()))
+                        return CompletableFuture.failedFuture(new AuthException("Security-key challenge expired. Start again."));
+                    ObjectNode body = objectMapper.createObjectNode()
+                            .put("challengeToken", challenge)
+                            .put("requestId", result.requestId().toString());
+                    body.set("credential", result.credential());
+                    HttpRequest finish = HttpRequest.newBuilder(AUTH_URI.resolve("webauthn/finish"))
+                            .timeout(Duration.ofSeconds(20)).header("Content-Type", "application/json")
+                            .header("Accept", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
+                    return httpClient.sendAsync(finish, HttpResponse.BodyHandlers.ofString());
+                }).thenApply(this::handleMfaResponse);
+    }
+
+    private record WebAuthnOptions(UUID requestId, JsonNode publicKey) {}
+    private record WebAuthnResult(UUID requestId, ObjectNode credential) {}
+
     String handleMfaResponse(HttpResponse<String> response) {
             if (response.statusCode() != 200) {
                 throw new AuthException(response.statusCode() == 429 ? "Too many attempts. Try again later."
+                        : "webauthn".equals(mfaMethod)
+                        ? "Security-key verification failed or expired. Try again, or start over."
                         : "Code rejected or challenge expired. Try a fresh code, or start again.");
             }
             String token = handleLoginResponse(response);

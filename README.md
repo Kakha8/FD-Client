@@ -17,6 +17,18 @@ for decrypting user content.
 
 ## Highlights
 
+### FIDO2 sign-in on Windows
+
+The sign-in screen also supports accounts protected by a registered FIDO2 security key.
+After the account password, select **Use security key**; Windows Security handles
+the authenticator PIN and on-device approval. The desktop client uses the backend's
+`/api/auth/webauthn/options` and `/api/auth/webauthn/finish` endpoints. Set
+`FDCLIENT_WEBAUTHN_ORIGIN` to an exact origin in the backend's `app.webauthn.origins`
+(`http://localhost:5173` for local development). The RP ID in the
+backend options must match that origin's domain. This is Windows-only in the
+desktop client; enrollment and removal remain in the web settings page. WebAuthn
+is disabled in the current HTTP-only AWS preview environment.
+
 ### ESP32 TOTP enrollment (test accounts only)
 
 The client supports the complete test flow: serial discovery and seed import,
@@ -159,20 +171,22 @@ Copy the example configuration:
 Copy-Item .env.example .env
 ```
 
+The shared AWS preview is the default:
+
+```dotenv
+FDCLIENT_API_BASE_URL=http://file-drive-preview-1837123084.eu-central-1.elb.amazonaws.com
+```
+
 For a backend on the same computer:
 
 ```dotenv
 FDCLIENT_API_BASE_URL=https://localhost:8443
 ```
 
-For another computer on the local network:
-
-```dotenv
-FDCLIENT_API_BASE_URL=https://192.168.100.5:8443
-```
-
-The process environment variable takes precedence over `.env`. Only an HTTPS
-origin is accepted.
+The process environment variable takes precedence over `.env`. HTTPS origins
+are accepted, plus the current HTTP-only AWS preview origin. The preview sends
+credentials and session tokens without transport encryption, so it is suitable
+only for disposable development data until the load balancer is upgraded to HTTPS.
 
 ### 2. Build the native library
 

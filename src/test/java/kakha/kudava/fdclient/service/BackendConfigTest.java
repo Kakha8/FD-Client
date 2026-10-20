@@ -17,10 +17,18 @@ class BackendConfigTest {
     Path temporaryDirectory;
 
     @Test
-    void blankConfigurationUsesLocalhost() {
+    void blankConfigurationUsesCloudPreview() {
         assertEquals(
-                URI.create("https://localhost:8443"),
+                URI.create(BackendConfig.DEFAULT_BASE_URL),
                 BackendConfig.resolveBaseUri(" ")
+        );
+    }
+
+    @Test
+    void currentHttpPreviewOriginIsAccepted() {
+        assertEquals(
+                URI.create(BackendConfig.DEFAULT_BASE_URL),
+                BackendConfig.resolveBaseUri(BackendConfig.DEFAULT_BASE_URL + "/")
         );
     }
 
